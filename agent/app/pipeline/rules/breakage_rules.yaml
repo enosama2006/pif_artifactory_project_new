@@ -1,0 +1,18 @@
+# Meaning-breakage cascade rules — edited by humans, tested in CI.
+# when_hidden_class: a surface of this class in a table row was decided hidden
+# same_row_hide:     classes in the SAME row that lose their value and must follow
+rules:
+  - name: identifier_orphaned_qualifiers
+    when_hidden_class: INTERNAL_DOC_NAME
+    same_row_hide: [INSTANCE_IDENTIFIER, QUALIFIER_OF_IDENTIFIER]
+    reason: "الرقم والتاريخ بلا مرجعهما فقدا قيمتهما"
+    placeholders:
+      INSTANCE_IDENTIFIER: "<رقم_القرار>"
+      QUALIFIER_OF_IDENTIFIER: "<تاريخ_القرار>"
+
+  - name: person_orphaned_contact
+    when_hidden_class: PERSON
+    same_row_hide: [CONTACT_DETAIL]
+    reason: "بيانات التواصل بلا صاحبها تكشف الهوية"
+    placeholders:
+      CONTACT_DETAIL: "<بيانات_تواصل>"

@@ -1,0 +1,10 @@
+{
+  "name": "anonymizer-addin",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Word Add-in for institutional document anonymization",
+  "scripts": {
+    "dev": "echo 'Milestone 3: office-addin dev server'",
+    "generate:api": "echo 'openapi-typescript http://localhost:8080/openapi.json -o src/api/schema.d.ts'"
+  }
+}
