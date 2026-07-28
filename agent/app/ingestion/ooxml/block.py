@@ -75,11 +75,17 @@ class OoxmlBlock:
                     style = _p_style(el)
                     if origin != "body":
                         kind = origin
-                    elif style.startswith("Heading") or style == "Title":
-                        kind = "title" if style == "Title" else "heading"
-                        if kind == "heading":
-                            sec_idx += 1
-                            section = f"s{sec_idx}"
+                    elif style == "Title":
+                        kind = "title"
+                    elif (style.startswith("Heading") or "heading" in style.lower()
+                          or _p_outline_level(el) is not None):
+                        # custom templates rarely use the stock "Heading N"
+                        # styles — w:outlineLvl marks a heading regardless of
+                        # the style name (real-run finding: 124 leaves, all
+                        # 'paragraph', one giant section)
+                        kind = "heading"
+                        sec_idx += 1
+                        section = f"s{sec_idx}"
                     else:
                         kind = "paragraph"
                     n += 1
@@ -164,3 +170,16 @@ def _p_style(p) -> str:
         if st is not None:
             return st.get(f"{W}val", "")
     return ""
+
+
+def _p_outline_level(p):
+    """w:outlineLvl value (0-8) if the paragraph is outline-marked, else None."""
+    ppr = p.find(f"{W}pPr")
+    if ppr is not None:
+        lvl = ppr.find(f"{W}outlineLvl")
+        if lvl is not None:
+            try:
+                return int(lvl.get(f"{W}val", ""))
+            except ValueError:
+                return None
+    return None

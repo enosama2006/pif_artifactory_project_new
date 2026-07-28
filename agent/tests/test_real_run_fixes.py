@@ -137,3 +137,50 @@ def test_keep_leaf_with_acronym_token_flagged():
                    "Hosted on the PIF-X shared platform.", "root")]
     res = validate_and_assemble(leaves, [], [Decision("L_000001", "KEEP")], actors)
     assert any("PIF" in r["reason"] for r in res.review_queue)
+
+
+# ── second real run (json_validate_failed): chunking + resilience ───────────
+
+def test_inventory_chunks_split_giant_sections():
+    from _adk.stages import _inventory_chunks
+    leaves = [Leaf(f"L_{i:06d}", "paragraph", "x" * 500, "root") for i in range(1, 101)]
+    chunks = list(_inventory_chunks(leaves))
+    assert len(chunks) > 1                                  # 50k chars → split
+    assert sum(len(c) for _, c in chunks) == 100            # nothing dropped
+    assert all(sum(len(l.text) for l in c) <= 12000 for _, c in chunks)
+
+
+def test_inventory_survives_partial_chunk_failure():
+    import asyncio
+    from _adk.stages import inventory_stage
+    from app.llm.client import StubLlm
+
+    class FlakyChunks(StubLlm):
+        calls = 0
+        def json_call(self, prompt, *, payload=None, **kw):
+            FlakyChunks.calls += 1
+            if FlakyChunks.calls == 1:
+                raise RuntimeError("LLM call failed after retries: json_validate_failed")
+            return {"actors": [{"name": "Zeta Corp", "kind": "ORG_OWNER",
+                                "role": "issuer", "variants": ["Zeta Corp"]}]}
+
+    leaves = [Leaf(f"L_{i:06d}", "paragraph", "y" * 500, "root") for i in range(1, 60)]
+    state = {"leaves": [l.__dict__ for l in leaves]}
+    result = asyncio.run(inventory_stage(state, FlakyChunks()))
+    assert result["ok"] is True                             # run continues
+    assert result["delta"]["inventory_failed_chunks"] == 1  # loss is visible
+    assert "ACT_001" in result["delta"]["actors"]           # partial inventory kept
+
+
+def test_outline_level_marks_heading():
+    import io, zipfile
+    from app.ingestion import ingest
+    W_NS = 'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"'
+    doc = (f'<w:document {W_NS}><w:body>'
+           '<w:p><w:pPr><w:pStyle w:val="PIFCustomHead"/><w:outlineLvl w:val="0"/></w:pPr>'
+           '<w:r><w:t>Purpose</w:t></w:r></w:p>'
+           '<w:p><w:r><w:t>Body text here.</w:t></w:r></w:p>'
+           '</w:body></w:document>')
+    usd = ingest(doc.encode(), "ooxml")
+    assert [l.kind for l in usd.leaves] == ["heading", "paragraph"]
+    assert usd.leaves[1].section == "s1"                    # section boundary created

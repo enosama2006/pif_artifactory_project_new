@@ -20,6 +20,14 @@ def _int_env(name: str, default: int) -> int:
 LLM_MODEL = os.environ.get("ANONYMIZER_LLM_MODEL", "groq/openai/gpt-oss-120b")
 DB_URL = os.environ.get("ANONYMIZER_DB_URL", "")  # empty → ./anonymizer.db
 
+# gpt-oss-120b is a reasoning model: the token budget must cover the hidden
+# reasoning BEFORE the JSON starts, or Groq returns json_validate_failed with
+# an empty failed_generation (real-run finding). Lineage values: 8192/16000.
+LLM_MAX_TOKENS = _int_env("ANONYMIZER_LLM_MAX_TOKENS", 8192)
+INVENTORY_MAX_TOKENS = _int_env("ANONYMIZER_INVENTORY_MAX_TOKENS", 16000)
+# a "section" bigger than this is sub-split into multiple inventory calls
+INVENTORY_CHUNK_CHARS = _int_env("ANONYMIZER_INVENTORY_CHUNK_CHARS", 12000)
+
 BATCH_CHAR_BUDGET = _int_env("ANONYMIZER_BATCH_CHAR_BUDGET", 4000)
 MAX_CONCURRENCY = _int_env("ANONYMIZER_MAX_CONCURRENCY", 6)
 SECTION_ANALYSIS_TIMEOUT = _int_env("ANONYMIZER_SECTION_TIMEOUT", 120)

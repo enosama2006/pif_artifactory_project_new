@@ -60,28 +60,57 @@ async def ingest_stage(state, llm):
 
 # ── 2. inventory (LLM per section) + deterministic merge, dictionary LOCKED ─
 
-async def inventory_stage(state, llm):
-    leaves = _leaves(state)
+def _inventory_chunks(leaves):
+    """Section-bounded chunks, sub-split by char budget — one huge 'root'
+    section (a doc whose headings the parser can't classify) must not become
+    one giant LLM call (real-run finding: json_validate_failed on 124 leaves)."""
+    from app import config
     sections: dict[str, list[Leaf]] = {}
     for lf in leaves:
         sections.setdefault(lf.section, []).append(lf)
-
-    extractions = []
     for sec, sec_leaves in sections.items():
+        chunk, size = [], 0
+        for lf in sec_leaves:
+            if chunk and size + len(lf.text) > config.INVENTORY_CHUNK_CHARS:
+                yield sec, chunk
+                chunk, size = [], 0
+            chunk.append(lf)
+            size += len(lf.text)
+        if chunk:
+            yield sec, chunk
+
+
+async def inventory_stage(state, llm):
+    from app import config
+    leaves = _leaves(state)
+    extractions, failed = [], 0
+    chunks = list(_inventory_chunks(leaves))
+    for sec, chunk in chunks:
         payload = {"task": "inventory", "section": sec,
                    "leaves": [{"id": l.leaf_id, "kind": l.kind, "text": l.text}
-                              for l in sec_leaves]}
-        data = llm.json_call(build_inventory_prompt(payload), payload=payload)
-        extractions.append([a for a in data.get("actors", []) if isinstance(a, dict)])
+                              for l in chunk]}
+        try:
+            data = llm.json_call(build_inventory_prompt(payload), payload=payload,
+                                 max_tokens=config.INVENTORY_MAX_TOKENS)
+            extractions.append([a for a in data.get("actors", []) if isinstance(a, dict)])
+        except Exception:  # one chunk must not kill the run — the residual
+            failed += 1    # leak sweep + review queue compensate downstream
+    if failed == len(chunks) and chunks:
+        return {"ok": False,
+                "message": f"inventory failed on all {failed} chunk(s) — aborting"}
 
     actors = merge_actors(extractions)
-    msg = (f"{len(actors)} actors; dictionary LOCKED: "
-           + ", ".join(f"{a.name}→{a.placeholder}" for a in actors.values())
-           if actors else
-           "0 actors extracted"
-           + (" (stub mode — set GROQ_API_KEY for real extraction)" if llm.is_stub else ""))
+    msg = (f"{len(actors)} actors from {len(chunks) - failed}/{len(chunks)} chunk(s)"
+           + (f" ({failed} chunk(s) FAILED — coverage reduced, check review queue)"
+              if failed else "")
+           + ("; dictionary LOCKED: "
+              + ", ".join(f"{a.name}→{a.placeholder}" for a in actors.values())
+              if actors else
+              ("" if failed else
+               " (stub mode — set GROQ_API_KEY for real extraction)" if llm.is_stub else "")))
     return {"ok": True, "message": msg,
-            "delta": {"actors": {k: asdict(a) for k, a in actors.items()}}}
+            "delta": {"actors": {k: asdict(a) for k, a in actors.items()},
+                      "inventory_failed_chunks": failed}}
 
 
 # ── 3. surface scan (deterministic — the no-drop net) ───────────────────────

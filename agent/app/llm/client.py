@@ -61,19 +61,30 @@ class GroqAdapter:
     def __init__(self, model: str = config.LLM_MODEL):
         self.model = model
 
+    # json_validate_failed at temperature=0 is DETERMINISTIC — the same input
+    # reproduces the same failure on every retry, so retries must escalate the
+    # sampling temperature to actually re-roll (real-run finding: 5 identical
+    # failures in a row, failed_generation empty).
+    _JSON_RETRY_TEMPS = (0.0, 0.3, 0.6, 0.9, 1.0, 1.0)
+    _JSON_FRAGMENTS = ("json_validate_failed", "Failed to generate JSON")
+
     def json_call(self, prompt: str, *, payload: dict | None = None,
-                  max_tokens: int = 4096, temperature: float = 0.0) -> dict:
+                  max_tokens: int = config.LLM_MAX_TOKENS,
+                  temperature: float = 0.0) -> dict:
         import litellm
         last = None
+        json_fails = 0
         for wait in (0,) + _BACKOFF:
             if wait:
                 time.sleep(wait)
+            temp = max(temperature,
+                       self._JSON_RETRY_TEMPS[min(json_fails, len(self._JSON_RETRY_TEMPS) - 1)])
             try:
                 resp = litellm.completion(
                     model=self.model,
                     messages=[{"role": "user", "content": prompt}],
                     response_format={"type": "json_object"},
-                    temperature=temperature,
+                    temperature=temp,
                     max_tokens=max_tokens,
                     timeout=config.DECIDE_HARD_TIMEOUT * 2,
                 )
@@ -87,7 +98,10 @@ class GroqAdapter:
                 return data if isinstance(data, dict) else {}
             except Exception as exc:  # noqa: BLE001 — fragment-matched below
                 last = exc
-                if not any(f in str(exc) for f in _TRANSIENT_FRAGMENTS):
+                msg = str(exc)
+                if any(f in msg for f in self._JSON_FRAGMENTS):
+                    json_fails += 1
+                elif not any(f in msg for f in _TRANSIENT_FRAGMENTS):
                     raise
         raise RuntimeError(f"LLM call failed after retries: {last!r}")
 
