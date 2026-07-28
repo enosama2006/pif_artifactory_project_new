@@ -25,6 +25,7 @@ class Leaf:
     section: str          # section path key ("root", "s1", "s1/s1.2", …)
     row: str | None = None    # table row address (t1r4) — cascade-rule scope
     col: str | None = None    # column header text — free table semantics
+    anchor: str | None = None  # client content-control tag (anz:…) — apply target
 
     def __post_init__(self):
         if self.kind not in KINDS:

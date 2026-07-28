@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<title>Anonymizer</title>
+<script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
+<style>
+  :root { --ink:#1a1a2e; --accent:#0b7a5c; --warn:#b3541e; --line:#e2e2ea; }
+  * { box-sizing:border-box; font-family:"Segoe UI", Tahoma, sans-serif; }
+  body { margin:0; padding:12px; color:var(--ink); font-size:13px; }
+  h2 { font-size:15px; margin:0 0 8px; }
+  h3 { font-size:13px; margin:14px 0 6px; border-bottom:1px solid var(--line); padding-bottom:4px; }
+  button { border:0; border-radius:6px; padding:8px 12px; cursor:pointer; font-size:13px; }
+  .primary { background:var(--accent); color:#fff; width:100%; }
+  .primary:disabled { background:#9bb8af; }
+  .mini { background:#eef2f0; padding:3px 8px; font-size:12px; margin-inline-start:4px; }
+  #status { margin:10px 0; padding:8px; background:#f6f7f9; border-radius:6px;
+            white-space:pre-wrap; max-height:130px; overflow-y:auto; font-size:12px; }
+  .card { border:1px solid var(--line); border-radius:6px; padding:8px; margin:6px 0; }
+  .card .before { color:#777; text-decoration:line-through; font-size:12px; }
+  .card .after { color:var(--accent); font-weight:600; }
+  .card.review { border-color:var(--warn); background:#fff8f2; }
+  .tag { display:inline-block; background:#eef2f0; border-radius:4px;
+         padding:1px 6px; font-size:11px; color:#555; }
+  table { width:100%; border-collapse:collapse; font-size:12px; }
+  td,th { border-bottom:1px solid var(--line); padding:4px; text-align:right; }
+  input.ph { width:100%; border:1px solid var(--line); border-radius:4px; padding:3px 6px; }
+  #serverRow { display:flex; gap:6px; margin-bottom:8px; }
+  #serverRow input { flex:1; border:1px solid var(--line); border-radius:6px; padding:6px; direction:ltr; }
+  .muted { color:#888; font-size:11px; }
+</style>
+</head>
+<body>
+  <h2>🕶️ إخفاء الهوية</h2>
+  <div id="serverRow">
+    <input id="serverUrl" value="http://localhost:8080" spellcheck="false">
+    <button class="mini" onclick="checkHealth()">فحص</button>
+  </div>
+  <button id="runBtn" class="primary" onclick="runPipeline()">ابدأ التجريد</button>
+  <div id="status">جاهز. تأكد أن الوكيل يعمل ثم اضغط «ابدأ التجريد».</div>
+
+  <div id="results" style="display:none">
+    <h3>القاموس — الهويات المكتشفة <span id="actorCount" class="tag"></span></h3>
+    <div id="dict"></div>
+
+    <h3>قائمة المراجعة <span id="reviewCount" class="tag"></span></h3>
+    <div id="review"></div>
+
+    <h3>التغييرات المقترحة <span id="changeCount" class="tag"></span></h3>
+    <button class="mini" onclick="applyAll()">✓ طبّق الكل كتغييرات متعقبة</button>
+    <button class="mini" onclick="removeAnchors()">🧹 أزل وسوم الترسيخ</button>
+    <div id="changes"></div>
+  </div>
+
+<script src="taskpane.js"></script>
+</body>
+</html>

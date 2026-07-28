@@ -4,8 +4,14 @@ Covers RISK #2 (docs/RISKS.md): walks document.xml AND header*/footer*/
 footnotes parts of a .docx — the org name usually lives in the page header,
 and no v1–v10 generation ever read those parts.
 
-Raw document.xml input (no zip) is also accepted for the add-in path, where
-the client sends the package it extracted itself.
+Accepted inputs (auto-detected):
+  - .docx zip bytes
+  - raw word/document.xml
+  - Word XML package (`<pkg:package>` — what Office.js `getOoxml()` returns)
+
+Anchoring: if the add-in wrapped paragraphs in content controls tagged
+`anz:...` (w:sdt/w:sdtPr/w:tag), each leaf carries that tag in `anchor`, and
+the final payload applies by anchor — never by text search.
 """
 import io
 import re
@@ -32,7 +38,15 @@ class OoxmlBlock:
                     elif name == "word/footnotes.xml":
                         parts.append(("footnote", z.read(name)))
         else:
-            parts.append(("body", raw))
+            text = raw.decode("utf-8", errors="replace")
+            if "<pkg:package" in text[:2000]:
+                # Office.js getOoxml() envelope — slice out the main document
+                m = re.search(r"<w:document[\s\S]*?</w:document>", text)
+                if not m:
+                    raise ValueError("pkg:package without a w:document part")
+                parts.append(("body", m.group(0).encode("utf-8")))
+            else:
+                parts.append(("body", raw))
 
         usd = UnifiedDocument(source_format="ooxml")
         n = 0
@@ -40,12 +54,12 @@ class OoxmlBlock:
         sec_idx = 0
         for origin, xml_bytes in sorted(parts, key=lambda p: p[0] != "body"):
             root = ET.fromstring(xml_bytes)
-            # ElementTree has no parent pointers; table paragraphs are handled
-            # by _table(), so collect their ids once and skip them in the walk.
+            # ElementTree has no parent pointers — precompute per-part maps:
             table_ps = {id(p) for tbl in root.iter(f"{W}tbl") for p in tbl.iter(f"{W}p")}
+            anchors = _anchor_map(root)
             for el in root.iter():
                 if el.tag == f"{W}tbl":
-                    n = self._table(el, usd, n, section)
+                    n = self._table(el, usd, n, section, anchors)
                 elif el.tag == f"{W}p" and id(el) not in table_ps:
                     text = _p_text(el)
                     if not text.strip():
@@ -61,15 +75,17 @@ class OoxmlBlock:
                     else:
                         kind = "paragraph"
                     n += 1
-                    usd.leaves.append(Leaf(f"L_{n:06d}", kind, text, section))
+                    usd.leaves.append(Leaf(f"L_{n:06d}", kind, text, section,
+                                           anchor=anchors.get(id(el))))
         return usd
 
-    def _table(self, tbl, usd: UnifiedDocument, n: int, section: str):
+    def _table(self, tbl, usd: UnifiedDocument, n: int, section: str, anchors):
         t_id = f"t{sum(1 for l in usd.leaves if l.row and l.row.endswith('r0')) + 1}"
         headers: list[str] = []
         for r_i, tr in enumerate(tbl.findall(f"{W}tr")):
             for c_i, tc in enumerate(tr.findall(f"{W}tc")):
-                text = " ".join(_p_text(p) for p in tc.findall(f"{W}p")).strip()
+                cell_ps = list(tc.iter(f"{W}p"))  # .iter — paragraphs may sit inside w:sdt
+                text = " ".join(_p_text(p) for p in cell_ps).strip()
                 if not text:
                     continue
                 if r_i == 0:
@@ -78,10 +94,25 @@ class OoxmlBlock:
                 else:
                     kind = "table_cell"
                     col = headers[c_i] if c_i < len(headers) else None
+                anchor = next((anchors[id(p)] for p in cell_ps if id(p) in anchors), None)
                 n += 1
                 usd.leaves.append(Leaf(f"L_{n:06d}", kind, text, section,
-                                       row=f"{t_id}r{r_i}", col=col))
+                                       row=f"{t_id}r{r_i}", col=col, anchor=anchor))
         return n
+
+
+def _anchor_map(root) -> dict[int, str]:
+    """{id(w:p): 'anz:…'} for every paragraph inside a tagged content control."""
+    out: dict[int, str] = {}
+    for sdt in root.iter(f"{W}sdt"):
+        pr = sdt.find(f"{W}sdtPr")
+        tag_el = pr.find(f"{W}tag") if pr is not None else None
+        tag = tag_el.get(f"{W}val", "") if tag_el is not None else ""
+        if not tag.startswith("anz:"):
+            continue
+        for p in sdt.iter(f"{W}p"):
+            out.setdefault(id(p), tag)
+    return out
 
 
 def _p_text(p) -> str:

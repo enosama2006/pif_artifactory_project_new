@@ -50,7 +50,13 @@ def validate_and_assemble(leaves, links, decisions, actors,
                           "replace": ph_by_actor[l.actor_id]}
                          for l in links_by_leaf.get(lf.leaf_id, [])]
             if spans:
-                res.payload.append({"leaf_id": lf.leaf_id, "spans": spans})
+                res.payload.append({
+                    "leaf_id": lf.leaf_id,
+                    "anchor": lf.anchor,          # content-control tag, if the add-in anchored
+                    "before": lf.text,
+                    "after": render_preview(lf, spans),
+                    "spans": spans,
+                })
         else:  # KEEP
             for l in links_by_leaf.get(lf.leaf_id, []):
                 res.warnings.append(
