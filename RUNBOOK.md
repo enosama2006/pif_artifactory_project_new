@@ -6,8 +6,9 @@ only in venv activation and `copy`→`cp`.
 
 > **Shortcut:** double-click **`start-all.bat`** in the repo root — it opens
 > the agent (self-provisioning on first run) and the add-in server in two
-> windows. `start-agent.bat` / `start-addin.bat` run them individually.
-> Sections 1–3 below explain what those launchers automate.
+> windows. `start-agent.bat` / `start-addin.bat` run them individually, and
+> **`start-adk-web.bat`** opens the ADK web UI (port 8000) for inspecting
+> sessions and state. Sections 1–3 below explain what the launchers automate.
 
 ## 0. Prerequisites
 
