@@ -1,12 +1,28 @@
 """Stage 3b (AGENT): deterministic actor merge + placeholder minting.
 
 The LLM's per-section extractions arrive as loose dicts; this module unifies
-duplicates across sections and mints ONE placeholder per actor. The dictionary
-is LOCKED here, before any rewriting — structural guarantee that the same
-person/org never gets two different placeholders in two batches.
-"""
-from dataclasses import dataclass, field
+them into ONE locked dictionary. Rules added from real-run findings
+(3e6163a5156e — 61 tiny chunks fragmented and polluted the inventory):
 
+  1. IDENTITY MERGE — actors are the same if their names match after
+     normalization (leading articles stripped) OR they share ANY variant
+     ("Chief of Staff" + "CoS DH" extracted separately must not get two
+     placeholders; that breaks the core consistency guarantee).
+  2. VARIANT TRIMMING — a variant that merely wraps a shorter variant in
+     extra words is dropped ("PIF data systems", "owning divisions of NDMO
+     functional domains"): the scan matches the core inside the phrase
+     anyway, and replacing the whole phrase destroys the sentence.
+  3. GENERIC-ACTOR DROP — an "actor" whose every variant is built purely
+     from generic vocabulary ("This Policy", "Data Strategy", "Change
+     Management Plan") carries no identity; replacing it damages the
+     document for zero privacy gain.
+  4. PLACEHOLDER SANITIZATION — placeholders must never leak identity
+     ("<PIF_personnel>") and must stay a clean tag charset.
+"""
+import re
+from dataclasses import dataclass
+
+from .._lexicon import GENERIC_TOKENS
 from ..surface_scan.scan import normalize
 
 
@@ -21,34 +37,107 @@ class Actor:
     status: str = "confirmed"       # confirmed | candidate (decide-stage discoveries)
 
 
+_ARTICLES = re.compile(r"^(?:the|a|an|ال)\s+", re.IGNORECASE)
+_TOKEN = re.compile(r"[A-Za-z؀-ۿ][\w؀-ۿ]*")
+
+
+def _key(name: str) -> str:
+    return _ARTICLES.sub("", normalize(name).strip()).lower()
+
+
+def _tokens(text: str) -> list[str]:
+    return _TOKEN.findall(text)
+
+
 def merge_actors(section_extractions: list[list[dict]]) -> dict[str, Actor]:
     """[[{name, kind, role, variants}, …] per section] → {actor_id: Actor}."""
     merged: dict[str, Actor] = {}
     for extraction in section_extractions:
         for raw in extraction:
-            key = normalize(raw["name"])
-            if key in merged:
-                a = merged[key]
-                a.variants = sorted(set(a.variants) | set(raw.get("variants", [raw["name"]])))
-                role = raw.get("role", "")
-                if role and role not in a.roles:
-                    a.roles.append(role)
+            name = str(raw.get("name", "")).strip()
+            if not name:
+                continue
+            variants = sorted({v.strip() for v in (raw.get("variants") or [name])
+                               if v and v.strip()} | {name})
+            target = merged.get(_key(name)) or _find_by_variant(merged, variants)
+            if target is not None:
+                target.variants = sorted(set(target.variants) | set(variants))
+                role = str(raw.get("role", "")).strip()
+                if role and role not in target.roles:
+                    target.roles.append(role)
+                merged.setdefault(_key(name), target)
             else:
-                merged[key] = Actor(
-                    actor_id="",
-                    name=raw["name"],
-                    kind=raw["kind"],
-                    roles=[raw.get("role", "")] if raw.get("role") else [],
-                    variants=sorted(set(raw.get("variants", []) or [raw["name"]])),
-                )
+                merged[_key(name)] = Actor(
+                    actor_id="", name=name, kind=str(raw.get("kind", "ORG_UNIT")),
+                    roles=[str(raw["role"]).strip()] if raw.get("role") else [],
+                    variants=variants)
+
     out: dict[str, Actor] = {}
-    for i, a in enumerate(merged.values(), 1):
-        a.actor_id = f"ACT_{i:03d}"
-        primary = a.roles[0] if a.roles else a.kind.lower()
-        a.placeholder = "<" + primary.replace(" ", "_") + ">"
+    seen: set[int] = set()
+    for a in merged.values():
+        if id(a) in seen:
+            continue
+        seen.add(id(a))
+        a.variants = _trim_wrapping_variants(a.variants)
+        if _is_generic(a):
+            continue
+        a.actor_id = f"ACT_{len(out) + 1:03d}"
         out[a.actor_id] = a
+
+    identity_tokens = _identity_tokens(out)
+    for a in out.values():
+        primary = a.roles[0] if a.roles else a.kind.lower()
+        a.placeholder = _mint_placeholder(primary, identity_tokens)
     _dedupe_placeholders(out)
     return out
+
+
+def _find_by_variant(merged: dict[str, Actor], variants: list[str]):
+    keys = {_key(v) for v in variants}
+    for a in merged.values():
+        if keys & {_key(v) for v in a.variants}:
+            return a
+    return None
+
+
+def _trim_wrapping_variants(variants: list[str]) -> list[str]:
+    """Drop a variant that contains a shorter kept variant as a whole-word
+    substring — the scan will match the core inside it anyway."""
+    kept: list[str] = []
+    for v in sorted(variants, key=lambda x: len(normalize(x))):
+        nv = normalize(v).lower()
+        if any(re.search(rf"(?<![\w؀-ۿ]){re.escape(normalize(k).lower())}(?![\w؀-ۿ])", nv)
+               for k in kept):
+            continue
+        kept.append(v)
+    return sorted(kept)
+
+
+def _is_generic(a: Actor) -> bool:
+    for v in [a.name, *a.variants]:
+        toks = _tokens(v)
+        if toks and any(t.lower() not in GENERIC_TOKENS for t in toks):
+            return False
+    return True
+
+
+def _identity_tokens(actors: dict[str, Actor]) -> set[str]:
+    """Tokens that ARE identity (non-generic variant tokens) — they must
+    never appear inside any placeholder (found leaked: <PIF_personnel>)."""
+    out: set[str] = set()
+    for a in actors.values():
+        for v in [a.name, *a.variants]:
+            for t in _tokens(v):
+                if t.lower() not in GENERIC_TOKENS and len(t) >= 2:
+                    out.add(t.lower())
+    return out
+
+
+def _mint_placeholder(role: str, identity_tokens: set[str]) -> str:
+    toks = [t for t in _tokens(role) if t.lower() not in identity_tokens]
+    text = "_".join(toks) if toks else "actor"
+    text = re.sub(r"[^\w؀-ۿ]+", "_", text).strip("_") or "actor"
+    return f"<{text}>"
 
 
 def _dedupe_placeholders(actors: dict[str, Actor]) -> None:

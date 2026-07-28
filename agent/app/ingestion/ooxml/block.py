@@ -78,11 +78,15 @@ class OoxmlBlock:
                     elif style == "Title":
                         kind = "title"
                     elif (style.startswith("Heading") or "heading" in style.lower()
-                          or _p_outline_level(el) is not None):
+                          or (_p_outline_level(el) is not None
+                              and len(text.strip()) <= 100)):
                         # custom templates rarely use the stock "Heading N"
                         # styles — w:outlineLvl marks a heading regardless of
-                        # the style name (real-run finding: 124 leaves, all
-                        # 'paragraph', one giant section)
+                        # the style name. BUT numbered policy clauses also
+                        # carry outlineLvl (run 3e6163a5156e: 60 "headings",
+                        # full paragraphs among them, 61 tiny inventory
+                        # chunks) — a heading is SHORT, so outlineLvl only
+                        # counts for texts ≤100 chars.
                         kind = "heading"
                         sec_idx += 1
                         section = f"s{sec_idx}"

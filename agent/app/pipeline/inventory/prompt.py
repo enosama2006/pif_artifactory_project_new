@@ -39,11 +39,19 @@ ROLE must be DISTINCTIVE, not a bare type word: describe the function
 regulator"), never just "department" or "committee" — the role becomes the
 replacement text and must still distinguish actors of the same type.
 
-Do NOT extract generic structural artifacts of the document itself — table
-of contents, appendices, version/approval/amendment sheets, generic
-registers or lists — unless the artifact's own title contains an
-organisation-identifying name. Their titles reveal no identity and
-replacing them damages the document.
+Do NOT extract (they carry no identity and replacing them damages the
+document):
+- generic structural artifacts — table of contents, appendices,
+  version/approval/amendment sheets, generic registers, lists, plans,
+  frameworks, maps, curricula — unless the artifact's own title contains
+  an organisation-identifying name;
+- self-references to the current document ("this Policy", "the Policy");
+- generic standard-defined role titles used as common nouns (data owners,
+  data stewards, data custodians, personnel, stakeholders);
+- generic descriptive groups ("portfolio companies", "other affiliates").
+
+Never expand an abbreviation you have not seen expanded in the text —
+report the abbreviation as-is with your best functional role.
 
 Return ONE JSON object, nothing else:
 {{"actors": [{{"name": str, "kind": one of {sorted(ACTOR_KINDS)},

@@ -4,6 +4,7 @@
 
 Each test reproduces one observed defect and proves its fix.
 """
+import re
 import sys
 from pathlib import Path
 
@@ -184,3 +185,79 @@ def test_outline_level_marks_heading():
     usd = ingest(doc.encode(), "ooxml")
     assert [l.kind for l in usd.leaves] == ["heading", "paragraph"]
     assert usd.leaves[1].section == "s1"                    # section boundary created
+
+
+# ── third real run (3e6163a5156e): inventory fragmentation fixes ────────────
+
+def test_merge_unifies_article_prefix_and_shared_variant():
+    from app.pipeline.inventory import merge_actors
+    extractions = [
+        [{"name": "Data and Analytics Steering Committee", "kind": "ORG_UNIT",
+          "role": "steering committee", "variants": ["DASC", "Data and Analytics Steering Committee"]}],
+        [{"name": "The Data and Analytics Steering Committee", "kind": "ORG_UNIT",
+          "role": "steering committee", "variants": ["The Data and Analytics Steering Committee", "DASC"]}],
+        [{"name": "Chief of Staff", "kind": "PERSON", "role": "policy owner",
+          "variants": ["Chief of Staff", "CoS DH"]}],
+        [{"name": "CoS DH", "kind": "PERSON",
+          "role": "Chief of Staff, Department of Health",     # hallucinated expansion
+          "variants": ["CoS DH", "the CoS DH"]}],
+    ]
+    actors = merge_actors(extractions)
+    assert len(actors) == 2                       # one committee, one person
+    person = next(a for a in actors.values() if "CoS DH" in a.variants)
+    assert person.roles[0] == "policy owner"      # first-seen role wins over hallucination
+
+
+def test_variant_trimming_drops_wrapping_phrases():
+    from app.pipeline.inventory import merge_actors
+    actors = merge_actors([[
+        {"name": "PIF", "kind": "ORG_OWNER", "role": "owner organisation",
+         "variants": ["PIF", "PIF data systems", "PIF premises", "PIF-wide",
+                      "throughout PIF", "PIF’s"]},
+    ]])
+    a = next(iter(actors.values()))
+    assert a.variants == ["PIF"]                  # phrases trimmed; core matches inside them
+
+
+def test_generic_pseudo_actors_dropped():
+    from app.pipeline.inventory import merge_actors
+    actors = merge_actors([[
+        {"name": "This Policy", "kind": "INTERNAL_DOC", "role": "policy document",
+         "variants": ["Policy", "This Policy", "the Policy"]},
+        {"name": "Data Strategy", "kind": "INTERNAL_DOC", "role": "data strategy",
+         "variants": ["Data Strategy"]},
+        {"name": "Change Management Plan", "kind": "INTERNAL_DOC",
+         "role": "change management plan", "variants": ["Change Management Plan"]},
+        {"name": "Zeta Corp", "kind": "ORG_OWNER", "role": "owner organisation",
+         "variants": ["Zeta Corp"]},
+    ]])
+    names = {a.name for a in actors.values()}
+    assert names == {"Zeta Corp"}                 # only the identity-bearing actor survives
+
+
+def test_placeholder_never_contains_identity_tokens():
+    from app.pipeline.inventory import merge_actors
+    actors = merge_actors([[
+        {"name": "PIF", "kind": "ORG_OWNER", "role": "owner organisation",
+         "variants": ["PIF"]},
+        {"name": "PIF Academy", "kind": "ORG_UNIT", "role": "PIF training academy",
+         "variants": ["PIF Academy"]},
+    ]])
+    for a in actors.values():
+        assert "PIF" not in a.placeholder         # identity stripped from the tag
+        assert re.match(r"^<[\w؀-ۿ_]+>$", a.placeholder)  # clean charset
+
+
+def test_long_outline_paragraph_stays_paragraph():
+    import io, zipfile
+    from app.ingestion import ingest
+    W_NS = 'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"'
+    long_clause = "The Department shall " + "do many things " * 20   # ≫100 chars
+    doc = (f'<w:document {W_NS}><w:body>'
+           '<w:p><w:pPr><w:outlineLvl w:val="0"/></w:pPr>'
+           '<w:r><w:t>Purpose</w:t></w:r></w:p>'
+           f'<w:p><w:pPr><w:outlineLvl w:val="1"/></w:pPr>'
+           f'<w:r><w:t>{long_clause}</w:t></w:r></w:p>'
+           '</w:body></w:document>')
+    usd = ingest(doc.encode(), "ooxml")
+    assert [l.kind for l in usd.leaves] == ["heading", "paragraph"]

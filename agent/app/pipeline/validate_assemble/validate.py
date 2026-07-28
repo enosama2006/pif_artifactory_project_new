@@ -33,20 +33,7 @@ class AssembleResult:
 _DUP_DEF = re.compile(r"(<[^<>]+>)\s*[\(（]\s*[“”\"'«]*\s*\1\s*[”\"'»]*\s*[\)）]")
 
 # Tokens too generic to signal identity when they survive a rewrite.
-_GENERIC_TOKENS = {
-    "data", "governance", "policy", "policies", "department", "departments",
-    "committee", "committees", "board", "management", "office", "officer",
-    "center", "centre", "division", "divisions", "sheet", "register",
-    "registers", "appendix", "appendices", "table", "contents", "list",
-    "laws", "regulations", "regulatory", "document", "documents",
-    "applicable", "issue", "tracking", "definitions", "abbreviations",
-    "functional", "domain", "domains", "ownership", "catalog", "catalogue",
-    "tools", "records", "administration", "advisory", "national",
-    "analytics", "analytic", "advanced", "ai", "risk", "corporate",
-    "affairs", "version", "approval", "history", "amendment", "steering",
-    "working", "group", "strategy", "chief", "staff", "head", "body",
-    "the", "of", "and", "for", "hub", "general", "executive", "internal",
-}
+from .._lexicon import GENERIC_TOKENS as _GENERIC_TOKENS  # shared with merge
 
 _ACRONYMISH = re.compile(r"^(?:[A-Z]{2,6}|[A-Za-z]*[A-Z][a-z]*[A-Z][A-Za-z]*)$")
 _PLACEHOLDER_RE = re.compile(r"<[^<>]+>")
