@@ -13,7 +13,7 @@
  */
 /* global Office, Word, fetch, document */
 
-const UI_VERSION = "0.4.0";        // bump when the pane changes — shown in the header
+const UI_VERSION = "0.5.0";        // bump when the pane changes — shown in the header
 let RUN = null;                    // completed run result
 let SERVER = "http://localhost:8080";
 const STAGE_LABELS = {
@@ -184,6 +184,7 @@ async function runPipeline() {
     if (rec.status === "error") throw new Error(rec.error || "run failed");
 
     RUN = { run_id: rec.run_id, llm_mode: rec.llm_mode, ...rec.result };
+    indexSpans();
     $("diagBtn").disabled = false;
     log(`Run ${rec.run_id} completed (mode=${rec.llm_mode}).`);
     if (rec.llm_mode === "stub")
@@ -197,6 +198,42 @@ async function runPipeline() {
 }
 
 /* ── 3. results: metrics / dictionary / review / changes ─────────────────── */
+
+/* Map every span to its actor (by the ORIGINAL placeholder) so renames and
+ * ignores recompute `after` from spans, never by string surgery on text. */
+function indexSpans() {
+  const byPh = {};
+  Object.values(RUN.actors || {}).forEach(a => { byPh[a.placeholder] = a.actor_id; });
+  (RUN.payload || []).forEach(p => {
+    (p.spans || []).forEach(s => { s.actor_id = byPh[s.replace] || null; });
+  });
+}
+
+function recomputeAfter(p) {
+  let text = p.before;
+  const active = (p.spans || []).filter(s =>
+    !(s.actor_id && RUN.actors[s.actor_id] && RUN.actors[s.actor_id].ignored));
+  active.sort((a, b) => b.start - a.start).forEach(s => {
+    const repl = s.actor_id ? RUN.actors[s.actor_id].placeholder : s.replace;
+    text = text.slice(0, s.start) + repl + text.slice(s.end);
+  });
+  p.after = text;
+  p.empty = active.length === 0;   // nothing left to change → original text stands
+}
+
+function refreshChanges() {
+  (RUN.payload || []).forEach(recomputeAfter);
+  renderResults();
+}
+
+function toggleIgnore(actorId) {
+  const a = RUN.actors[actorId];
+  a.ignored = !a.ignored;
+  intervene("ignore_actor", actorId, { ignored: a.ignored });
+  refreshChanges();
+  log((a.ignored ? "Ignored: " : "Restored: ") + a.name +
+      (a.ignored ? " — its replacements removed; original text stands." : ""));
+}
 
 function renderResults() {
   const m = RUN.metrics || {};
@@ -212,11 +249,16 @@ function renderResults() {
   $("actorCount").textContent = actors.length;
   $("dict").innerHTML = actors.length
     ? "<table><tr><th>Name</th><th>Role(s)</th><th>Placeholder</th><th></th></tr>" +
-      actors.map(a =>
-        `<tr><td>${esc(a.name)}</td><td>${esc((a.roles || []).join(", "))}</td>` +
-        `<td><input class="ph" id="ph_${a.actor_id}" value="${esc(a.placeholder)}"></td>` +
-        `<td><button class="ghost small" onclick="renamePlaceholder('${a.actor_id}')">Save</button></td></tr>`
-      ).join("") + "</table>"
+      actors.map(a => {
+        const off = a.ignored;
+        return `<tr style="${off ? "opacity:.45;text-decoration:line-through" : ""}">` +
+        `<td>${esc(a.name)}</td><td>${esc((a.roles || []).join(", "))}</td>` +
+        `<td><input class="ph" id="ph_${a.actor_id}" value="${esc(a.placeholder)}" ${off ? "disabled" : ""}></td>` +
+        `<td style="white-space:nowrap">` +
+        `<button class="ghost small" onclick="renamePlaceholder('${a.actor_id}')" ${off ? "disabled" : ""}>Save</button> ` +
+        `<button class="ghost small" onclick="toggleIgnore('${a.actor_id}')">${off ? "↩ Restore" : "🚫 Ignore"}</button>` +
+        `</td></tr>`;
+      }).join("") + "</table>"
     : "<div class='muted'>No actors extracted (stub mode? set GROQ_API_KEY and rerun).</div>";
   show("secDict");
 
@@ -229,10 +271,11 @@ function renderResults() {
     : "<div class='muted'>Nothing needs review 🎉</div>";
   show("secReview");
 
-  const pl = RUN.payload || [];
+  const pl = (RUN.payload || []).filter(p => !p.empty);  // fully-ignored → original stands
   $("changeCount").textContent = pl.length;
-  $("changes").innerHTML = pl.map((p, i) =>
-    `<div class="card" id="chg_${i}">` +
+  $("changes").innerHTML = pl.map(p => {
+    const i = RUN.payload.indexOf(p);
+    return `<div class="card" id="chg_${i}">` +
     `<div class="before">${esc(p.before)}</div>` +
     `<div class="after">${esc(p.after)}</div>` +
     `<div class="actions">` +
@@ -240,7 +283,8 @@ function renderResults() {
     `<button class="ghost small" onclick="goTo(${i})">Locate</button>` +
     `<button class="ghost small" onclick="reject(${i})">✗ Reject</button>` +
     `<span class="anchor" style="margin-inline-start:auto">${esc(p.anchor || p.leaf_id)}</span>` +
-    `</div></div>`).join("") ||
+    `</div></div>`;
+  }).join("") ||
     "<div class='muted'>No changes proposed.</div>";
   show("secChanges");
 }
@@ -277,6 +321,7 @@ async function applyOne(i) {
 
 async function applyAll() {
   for (let i = 0; i < (RUN.payload || []).length; i++) {
+    if (RUN.payload[i].empty) continue;          // fully ignored → original stands
     const el = $("chg_" + i);
     if (el && !el.classList.contains("applied") && !el.classList.contains("rejected"))
       await applyOne(i);
@@ -300,11 +345,9 @@ function reject(i) {
 function renamePlaceholder(actorId) {
   const v = $("ph_" + actorId).value.trim();
   const a = RUN.actors[actorId];
-  const old = a.placeholder;
   a.placeholder = v;
-  (RUN.payload || []).forEach(p => { p.after = p.after.split(old).join(v); });
   intervene("rename_placeholder", actorId, { placeholder: v });
-  renderResults();
+  refreshChanges();                      // recomputed from spans, not string surgery
   log(`Renamed: ${a.name} → ${v} (intervention recorded).`);
 }
 

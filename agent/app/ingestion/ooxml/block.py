@@ -65,8 +65,13 @@ class OoxmlBlock:
             # ElementTree has no parent pointers — precompute per-part maps:
             table_ps = {id(p) for tbl in root.iter(f"{W}tbl") for p in tbl.iter(f"{W}p")}
             anchors = _anchor_map(root)
+            done_tbls: set[int] = set()  # nested tables are handled by their outer table
             for el in root.iter():
                 if el.tag == f"{W}tbl":
+                    if id(el) in done_tbls:
+                        continue
+                    for t2 in el.iter(f"{W}tbl"):
+                        done_tbls.add(id(t2))
                     n = self._table(el, usd, n, section, anchors)
                 elif el.tag == f"{W}p" and id(el) not in table_ps:
                     text = _p_text(el)
@@ -99,13 +104,26 @@ class OoxmlBlock:
         return usd
 
     def _table(self, tbl, usd: UnifiedDocument, n: int, section: str, anchors):
-        t_id = f"t{sum(1 for l in usd.leaves if l.row and l.row.endswith('r0')) + 1}"
+        """One table → leaves. Word wraps rows/cells in w:sdt freely (form
+        tables, repeating sections — real-run finding: ZERO table leaves on a
+        table-heavy document), so rows and cells are collected with .iter and
+        nested-table content is excluded explicitly."""
+        t_id = f"t{len({(l.row or ':').split('r')[0] for l in usd.leaves if l.row}) + 1}"
+        inner = [t2 for t2 in tbl.iter(f"{W}tbl") if t2 is not tbl]
+        inner_rows = {id(r) for t2 in inner for r in t2.iter(f"{W}tr")}
+        inner_cells = {id(c) for t2 in inner for c in t2.iter(f"{W}tc")}
+        inner_ps = {id(p) for t2 in inner for p in t2.iter(f"{W}p")}
+
         headers: list[str] = []
-        for r_i, tr in enumerate(tbl.findall(f"{W}tr")):
-            for c_i, tc in enumerate(tr.findall(f"{W}tc")):
-                cell_ps = list(tc.iter(f"{W}p"))  # .iter — paragraphs may sit inside w:sdt
+        rows = [r for r in tbl.iter(f"{W}tr") if id(r) not in inner_rows]
+        for r_i, tr in enumerate(rows):
+            cells = [c for c in tr.iter(f"{W}tc") if id(c) not in inner_cells]
+            for c_i, tc in enumerate(cells):
+                # .iter — paragraphs may sit inside w:sdt; a nested table's
+                # paragraphs belong to ITS cells, not to this one
+                cell_ps = [p for p in tc.iter(f"{W}p") if id(p) not in inner_ps]
                 text = " ".join(_p_text(p) for p in cell_ps).strip()
-                if not text:
+                if not text or text in _PLACEHOLDER_TEXTS:
                     continue
                 if r_i == 0:
                     headers.append(text)
@@ -117,6 +135,12 @@ class OoxmlBlock:
                 n += 1
                 usd.leaves.append(Leaf(f"L_{n:06d}", kind, text, section,
                                        row=f"{t_id}r{r_i}", col=col, anchor=anchor))
+
+        # nested tables are real tables too — recurse into the DIRECT children
+        nested_of_inner = {id(x) for t2 in inner for x in t2.iter(f"{W}tbl") if x is not t2}
+        for t2 in inner:
+            if id(t2) not in nested_of_inner:
+                n = self._table(t2, usd, n, section, anchors)
         return n
 
 

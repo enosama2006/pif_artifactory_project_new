@@ -34,6 +34,11 @@ never rewrite the skeleton itself):
 
 THIS BATCH covers sections: {json.dumps(payload.get("batch_sections", []), ensure_ascii=False)}
 
+TABLE HEADERS (context, like a path: leaves carrying "row"/"column" are
+table cells — one row is one record; use the column header to understand
+what each cell value means before deciding):
+{json.dumps(payload.get("table_headers", {}), ensure_ascii=False)}
+
 DICTIONARY:
 {json.dumps(payload["dictionary"], ensure_ascii=False)}
 

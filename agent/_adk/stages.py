@@ -170,6 +170,7 @@ async def decide_stage(state, llm):
 
     from app import config
     from app.pipeline.batching import build_skeleton, plan_batches
+    from app.pipeline.batching.plan import build_table_headers
 
     leaves = _leaves(state)
     actors = _actors(state)
@@ -184,22 +185,31 @@ async def decide_stage(state, llm):
     leaf_by_id = {l.leaf_id: l for l in leaves}
 
     skeleton = build_skeleton(leaves)
+    table_headers = build_table_headers(leaves)
     batches = plan_batches(leaves)
     dictionary = {a.placeholder: {"name": a.name, "roles": a.roles}
                   for a in actors.values()}
 
     def leaf_payload(lid):
         lf = leaf_by_id[lid]
-        return {"id": lid, "section": lf.section, "kind": lf.kind, "text": lf.text,
-                "mentions": [{"surface": x.surface, "placeholder": ph[x.actor_id]}
-                             for x in links_by_leaf.get(lid, [])],
-                "cascade": [c for c in cascade if c["leaf_id"] == lid]}
+        out = {"id": lid, "section": lf.section, "kind": lf.kind, "text": lf.text,
+               "mentions": [{"surface": x.surface, "placeholder": ph[x.actor_id]}
+                            for x in links_by_leaf.get(lid, [])],
+               "cascade": [c for c in cascade if c["leaf_id"] == lid]}
+        if lf.row:  # a cell: row is the atomic record, column gives meaning
+            out["row"] = lf.row
+            out["column"] = lf.col
+        return out
 
     sem = asyncio.Semaphore(config.MAX_CONCURRENCY)
 
     async def run_batch(batch):
+        batch_tables = {(leaf_by_id[i].row or ":").split("r")[0]
+                        for i in batch.leaf_ids if leaf_by_id[i].row}
         payload = {"task": "decide", "skeleton": skeleton,
                    "batch_sections": batch.sections, "dictionary": dictionary,
+                   "table_headers": {t: h for t, h in table_headers.items()
+                                     if t in batch_tables},
                    "leaves": [leaf_payload(i) for i in batch.leaf_ids]}
         async with sem:
             data = await asyncio.to_thread(
