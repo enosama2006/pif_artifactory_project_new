@@ -4,6 +4,11 @@ Everything needed to go from a fresh clone to anonymizing a document inside
 Word. All commands are PowerShell (Windows); Linux/macOS equivalents differ
 only in venv activation and `copy`→`cp`.
 
+> **Shortcut:** double-click **`start-all.bat`** in the repo root — it opens
+> the agent (self-provisioning on first run) and the add-in server in two
+> windows. `start-agent.bat` / `start-addin.bat` run them individually.
+> Sections 1–3 below explain what those launchers automate.
+
 ## 0. Prerequisites
 
 - Python **3.11+** (`python --version`)
