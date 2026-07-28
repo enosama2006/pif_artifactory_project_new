@@ -98,7 +98,7 @@
 <body>
   <header>
     <div class="brand">
-      <h1>Anonymizer</h1>
+      <h1>Anonymizer <span id="uiVersion" class="muted" style="font-size:10px"></span></h1>
       <span class="pill"><span id="agentDot" class="dot"></span><span id="agentState">checking…</span></span>
     </div>
   </header>
@@ -110,6 +110,12 @@
     </div>
 
     <button id="runBtn" class="primary" onclick="runPipeline()">▶ Run anonymization</button>
+    <div class="toolbar">
+      <button id="diagBtn" class="ghost" onclick="copyDiagnostics()" disabled>📋 Copy diagnostics</button>
+      <button class="ghost" onclick="removeAnchors()">Clean anchors</button>
+    </div>
+    <textarea id="diagBox" style="display:none; width:100%; height:120px; font:11px Consolas,monospace;
+      border:1px solid var(--line); border-radius:8px; margin-top:6px;" readonly></textarea>
 
     <div id="pipeline"></div>
     <div id="metrics"></div>
@@ -128,11 +134,7 @@
       <h2>Proposed changes <span id="changeCount" class="badge"></span></h2>
       <div class="toolbar">
         <button class="ghost" onclick="applyAll()">✓ Apply all (tracked changes)</button>
-        <button class="ghost" onclick="removeAnchors()">Clean anchors</button>
-        <button class="ghost" onclick="copyDiagnostics()">📋 Copy diagnostics</button>
       </div>
-      <textarea id="diagBox" style="display:none; width:100%; height:120px; font:11px Consolas,monospace;
-        border:1px solid var(--line); border-radius:8px; margin-top:6px;" readonly></textarea>
       <div id="changes"></div>
     </section>
 

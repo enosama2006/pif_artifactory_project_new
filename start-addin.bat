@@ -26,5 +26,5 @@ netstat -ano 2>nul | findstr /r ":3000 .*LISTENING" >nul && (
 echo [ADD-IN] Serving taskpane on http://localhost:3000  - press Ctrl+C to stop
 echo          In Word: Insert / My Add-ins / SHARED FOLDER / Anonymizer
 echo.
-python -m http.server 3000
+python serve.py 3000
 pause

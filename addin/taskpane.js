@@ -13,6 +13,7 @@
  */
 /* global Office, Word, fetch, document */
 
+const UI_VERSION = "0.4.0";        // bump when the pane changes — shown in the header
 let RUN = null;                    // completed run result
 let SERVER = "http://localhost:8080";
 const STAGE_LABELS = {
@@ -34,6 +35,8 @@ const log = (msg) => {
 };
 
 Office.onReady(() => {
+  $("uiVersion").textContent = "ui v" + UI_VERSION;
+  log("Taskpane loaded — ui v" + UI_VERSION);
   checkHealth();
   setInterval(checkHealth, 8000);   // live agent status in the header pill
 });
@@ -181,6 +184,7 @@ async function runPipeline() {
     if (rec.status === "error") throw new Error(rec.error || "run failed");
 
     RUN = { run_id: rec.run_id, llm_mode: rec.llm_mode, ...rec.result };
+    $("diagBtn").disabled = false;
     log(`Run ${rec.run_id} completed (mode=${rec.llm_mode}).`);
     if (rec.llm_mode === "stub")
       log("NOTE: stub mode — put GROQ_API_KEY in agent/.env for real extraction.");
