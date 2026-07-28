@@ -63,12 +63,15 @@ async def _execute(run_id: str, doc_path: str) -> None:
     rec = RUNS[run_id]
     llm = get_llm()
     rec["llm_mode"] = "stub" if llm.is_stub else "groq"
-    state: dict = {"input_path": doc_path}
+    # live sub-stage detail ("inventory: chunk 12/38") for the add-in's poll
+    state: dict = {"input_path": doc_path,
+                   "_progress": lambda msg: rec.__setitem__("detail", msg)}
     fns = [S.ingest_stage, S.inventory_stage, S.scan_stage,
            S.classify_rules_stage, S.decide_stage, S.assemble_stage]
 
     for name, fn in zip(STAGE_NAMES, fns):
         rec["current_stage"] = name
+        rec["detail"] = ""
         try:
             result = await fn(state, llm)
         except Exception as exc:  # surface, never hang

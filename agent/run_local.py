@@ -27,7 +27,8 @@ STAGES = [stages.ingest_stage, stages.inventory_stage, stages.scan_stage,
 async def main(path: str) -> int:
     llm = get_llm()
     print(f"LLM mode: {'STUB (no GROQ_API_KEY)' if llm.is_stub else 'Groq'}")
-    state: dict = {"input_path": path}
+    state: dict = {"input_path": path,
+                   "_progress": lambda m: print(f"    … {m}")}
     for fn in STAGES:
         result = await fn(state, llm)
         print(f"[{fn.__name__:<22}] {result.get('message', '')}")

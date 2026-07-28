@@ -81,22 +81,42 @@ def _inventory_chunks(leaves):
 
 
 async def inventory_stage(state, llm):
+    # LLM calls are BLOCKING (litellm + retry sleeps): they must run in
+    # threads and in parallel, or they starve the event loop — the server
+    # then cannot even answer the add-in's progress polls (real-run finding:
+    # pane frozen on "starting the run", zero GET /runs/{id} in the log).
+    import asyncio
+
     from app import config
     from app.pipeline.batching import build_skeleton
+
+    progress = state.get("_progress") or (lambda msg: None)
     leaves = _leaves(state)
     skeleton = build_skeleton(leaves)  # structure context in every chunk
-    extractions, failed = [], 0
     chunks = list(_inventory_chunks(leaves))
-    for sec, chunk in chunks:
+    sem = asyncio.Semaphore(config.MAX_CONCURRENCY)
+    done = 0
+
+    async def run_chunk(sec, chunk):
+        nonlocal done
         payload = {"task": "inventory", "section": sec, "skeleton": skeleton,
                    "leaves": [{"id": l.leaf_id, "kind": l.kind, "text": l.text}
                               for l in chunk]}
-        try:
-            data = llm.json_call(build_inventory_prompt(payload), payload=payload,
-                                 max_tokens=config.INVENTORY_MAX_TOKENS)
-            extractions.append([a for a in data.get("actors", []) if isinstance(a, dict)])
-        except Exception:  # one chunk must not kill the run — the residual
-            failed += 1    # leak sweep + review queue compensate downstream
+        async with sem:
+            try:
+                data = await asyncio.to_thread(
+                    llm.json_call, build_inventory_prompt(payload),
+                    payload=payload, max_tokens=config.INVENTORY_MAX_TOKENS)
+                return [a for a in data.get("actors", []) if isinstance(a, dict)]
+            except Exception:   # one chunk must not kill the run — the residual
+                return None     # leak sweep + review queue compensate downstream
+            finally:
+                done += 1
+                progress(f"inventory: chunk {done}/{len(chunks)}")
+
+    results = await asyncio.gather(*(run_chunk(s, c) for s, c in chunks))
+    extractions = [r for r in results if r is not None]
+    failed = sum(1 for r in results if r is None)
     if failed == len(chunks) and chunks:
         return {"ok": False,
                 "message": f"inventory failed on all {failed} chunk(s) — aborting"}
@@ -130,11 +150,12 @@ async def classify_rules_stage(state, llm):
     candidates = sweep(leaves)
     classifications = []
     if candidates:
+        import asyncio
         payload = {"task": "classify", "items": candidates}
         try:
-            items = closed_enum_call(llm, build_classify_prompt(payload),
-                                     enum=CLASS_ENUM, items_key="items",
-                                     payload=payload)
+            items = await asyncio.to_thread(   # blocking LLM call off the loop
+                closed_enum_call, llm, build_classify_prompt(payload),
+                enum=CLASS_ENUM, items_key="items", payload=payload)
         except EnumViolation:
             items = []  # unclassifiable → they simply never join a cascade
         by_surface = {c["surface"]: c for c in candidates}
@@ -202,18 +223,13 @@ async def decide_stage(state, llm):
         return out
 
     sem = asyncio.Semaphore(config.MAX_CONCURRENCY)
+    progress = state.get("_progress") or (lambda msg: None)
+    done = 0
 
-    async def run_batch(batch):
-        batch_tables = {(leaf_by_id[i].row or ":").split("r")[0]
-                        for i in batch.leaf_ids if leaf_by_id[i].row}
-        payload = {"task": "decide", "skeleton": skeleton,
-                   "batch_sections": batch.sections, "dictionary": dictionary,
-                   "table_headers": {t: h for t, h in table_headers.items()
-                                     if t in batch_tables},
-                   "leaves": [leaf_payload(i) for i in batch.leaf_ids]}
-        async with sem:
-            data = await asyncio.to_thread(
-                llm.json_call, build_decide_prompt(payload), payload=payload)
+    def process_batch(batch, payload):
+        """Whole batch — call, reconcile, per-leaf retries — runs in ONE
+        thread so no blocking LLM call ever touches the event loop."""
+        data = llm.json_call(build_decide_prompt(payload), payload=payload)
         response = data.get("decisions", {}) if isinstance(data, dict) else {}
 
         def retry(leaf_id):
@@ -223,6 +239,22 @@ async def decide_stage(state, llm):
             return d.get("decisions", {}).get(leaf_id)
 
         return reconcile_batch(batch.leaf_ids, response, allowed, retry_fn=retry)
+
+    async def run_batch(batch):
+        nonlocal done
+        batch_tables = {(leaf_by_id[i].row or ":").split("r")[0]
+                        for i in batch.leaf_ids if leaf_by_id[i].row}
+        payload = {"task": "decide", "skeleton": skeleton,
+                   "batch_sections": batch.sections, "dictionary": dictionary,
+                   "table_headers": {t: h for t, h in table_headers.items()
+                                     if t in batch_tables},
+                   "leaves": [leaf_payload(i) for i in batch.leaf_ids]}
+        async with sem:
+            try:
+                return await asyncio.to_thread(process_batch, batch, payload)
+            finally:
+                done += 1
+                progress(f"decide: batch {done}/{len(batches)}")
 
     results = await asyncio.gather(*(run_batch(b) for b in batches),
                                    return_exceptions=True)

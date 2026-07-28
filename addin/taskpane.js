@@ -13,7 +13,7 @@
  */
 /* global Office, Word, fetch, document */
 
-const UI_VERSION = "0.5.0";        // bump when the pane changes — shown in the header
+const UI_VERSION = "0.5.1";        // bump when the pane changes — shown in the header
 let RUN = null;                    // completed run result
 let SERVER = "http://localhost:8080";
 const STAGE_LABELS = {
@@ -127,13 +127,16 @@ function renderPipeline(stageNames, rec) {
   const done = new Set((rec?.stages || []).map(s => s.stage));
   const msgs = Object.fromEntries((rec?.stages || []).map(s => [s.stage, s.message]));
   $("pipeline").innerHTML = stageNames.map(name => {
-    let cls = "step", ico = "";
+    let cls = "step", ico = "", msg = msgs[name] || "";
     if (done.has(name)) { cls += " done"; ico = "✓"; }
-    else if (rec?.current_stage === name) { cls += " current"; }
+    else if (rec?.current_stage === name) {
+      cls += " current";
+      msg = rec?.detail || "working…";        // live sub-stage detail (chunk x/y)
+    }
     else if (rec?.status === "error" && rec?.error?.startsWith(name)) { cls += " error"; ico = "!"; }
     return `<div class="${cls}"><span class="ico">${ico}</span>` +
            `<span>${STAGE_LABELS[name] || name}</span>` +
-           `<span class="msg" title="${esc(msgs[name] || "")}">${esc(msgs[name] || "")}</span></div>`;
+           `<span class="msg" title="${esc(msg)}">${esc(msg)}</span></div>`;
   }).join("");
 }
 
