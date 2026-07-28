@@ -82,11 +82,13 @@ def _inventory_chunks(leaves):
 
 async def inventory_stage(state, llm):
     from app import config
+    from app.pipeline.batching import build_skeleton
     leaves = _leaves(state)
+    skeleton = build_skeleton(leaves)  # structure context in every chunk
     extractions, failed = [], 0
     chunks = list(_inventory_chunks(leaves))
     for sec, chunk in chunks:
-        payload = {"task": "inventory", "section": sec,
+        payload = {"task": "inventory", "section": sec, "skeleton": skeleton,
                    "leaves": [{"id": l.leaf_id, "kind": l.kind, "text": l.text}
                               for l in chunk]}
         try:
@@ -155,9 +157,20 @@ async def classify_rules_stage(state, llm):
                       "cascade": [asdict(h) for h in hits]}}
 
 
-# ── 5. decide (LLM batched) + per-leaf-ID reconciliation ─────────────────────
+# ── 5. decide (LLM, batched over ALL leaves) + per-leaf-ID reconciliation ───
+#
+# STRUCTURE vs TEXT separation (owner's design rule): the document skeleton
+# accompanies EVERY batch as context; the text itself is partitioned so that
+# every leaf lands in exactly one batch (invariant enforced by plan_batches).
+# Unlinked leaves reach the LLM too — that is what makes the "missed surface
+# → REVIEW" channel live (they previously never left the server).
 
 async def decide_stage(state, llm):
+    import asyncio
+
+    from app import config
+    from app.pipeline.batching import build_skeleton, plan_batches
+
     leaves = _leaves(state)
     actors = _actors(state)
     links = _links(state)
@@ -166,39 +179,59 @@ async def decide_stage(state, llm):
     links_by_leaf: dict[str, list] = {}
     for l in links:
         links_by_leaf.setdefault(l.leaf_id, []).append(l)
-    batch_ids = sorted(set(links_by_leaf) | {c["leaf_id"] for c in cascade})
-    if not batch_ids:
-        return {"ok": True, "message": "nothing linked — no decide call needed",
-                "delta": {"decisions": []}}
-
     ph = {a.actor_id: a.placeholder for a in actors.values()}
-    payload = {
-        "task": "decide",
-        "dictionary": {a.placeholder: {"name": a.name, "roles": a.roles}
-                       for a in actors.values()},
-        "leaves": [{
-            "id": lid,
-            "text": next(l.text for l in leaves if l.leaf_id == lid),
-            "mentions": [{"surface": x.surface, "placeholder": ph[x.actor_id]}
-                         for x in links_by_leaf.get(lid, [])],
-            "cascade": [c for c in cascade if c["leaf_id"] == lid],
-        } for lid in batch_ids],
-    }
-    data = llm.json_call(build_decide_prompt(payload), payload=payload)
-    response = data.get("decisions", {})
     allowed = set(ph.values()) | {c["placeholder"] for c in cascade}
+    leaf_by_id = {l.leaf_id: l for l in leaves}
 
-    def retry(leaf_id):
-        p = {"task": "retry_leaf",
-             "leaf": next(l for l in payload["leaves"] if l["id"] == leaf_id)}
-        d = llm.json_call(build_retry_prompt(p), payload=p)
-        return d.get("decisions", {}).get(leaf_id)
+    skeleton = build_skeleton(leaves)
+    batches = plan_batches(leaves)
+    dictionary = {a.placeholder: {"name": a.name, "roles": a.roles}
+                  for a in actors.values()}
 
-    decisions = reconcile_batch(batch_ids, response, allowed, retry_fn=retry)
-    reviews = [d for d in decisions if d.decision == "REVIEW"]
+    def leaf_payload(lid):
+        lf = leaf_by_id[lid]
+        return {"id": lid, "section": lf.section, "kind": lf.kind, "text": lf.text,
+                "mentions": [{"surface": x.surface, "placeholder": ph[x.actor_id]}
+                             for x in links_by_leaf.get(lid, [])],
+                "cascade": [c for c in cascade if c["leaf_id"] == lid]}
+
+    sem = asyncio.Semaphore(config.MAX_CONCURRENCY)
+
+    async def run_batch(batch):
+        payload = {"task": "decide", "skeleton": skeleton,
+                   "batch_sections": batch.sections, "dictionary": dictionary,
+                   "leaves": [leaf_payload(i) for i in batch.leaf_ids]}
+        async with sem:
+            data = await asyncio.to_thread(
+                llm.json_call, build_decide_prompt(payload), payload=payload)
+        response = data.get("decisions", {}) if isinstance(data, dict) else {}
+
+        def retry(leaf_id):
+            p = {"task": "retry_leaf",
+                 "leaf": next(l for l in payload["leaves"] if l["id"] == leaf_id)}
+            d = llm.json_call(build_retry_prompt(p), payload=p)
+            return d.get("decisions", {}).get(leaf_id)
+
+        return reconcile_batch(batch.leaf_ids, response, allowed, retry_fn=retry)
+
+    results = await asyncio.gather(*(run_batch(b) for b in batches),
+                                   return_exceptions=True)
+    decisions = []
+    for batch, res in zip(batches, results):
+        if isinstance(res, Exception):  # whole batch dead → visible REVIEWs
+            decisions += [Decision(i, "REVIEW",
+                                   reason=f"batch {batch.batch_id} failed: {res}")
+                          for i in batch.leaf_ids]
+        else:
+            decisions += res
+
+    assert len(decisions) == len(leaves), "decide lost coverage"  # the invariant
+    reviews = sum(1 for d in decisions if d.decision == "REVIEW")
     return {"ok": True,
-            "message": f"{len(decisions)} decisions ({len(reviews)} REVIEW)",
-            "delta": {"decisions": [asdict(d) for d in decisions]}}
+            "message": (f"{len(decisions)}/{len(leaves)} decisions across "
+                        f"{len(batches)} batch(es) ({reviews} REVIEW)"),
+            "delta": {"decisions": [asdict(d) for d in decisions],
+                      "batch_count": len(batches)}}
 
 
 # ── 6. validate + assemble (hard gates) ──────────────────────────────────────

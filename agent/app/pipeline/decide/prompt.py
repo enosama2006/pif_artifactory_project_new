@@ -28,10 +28,16 @@ Return ONE JSON object, nothing else:
 {{"decisions": {{"<leaf_id>": {{"decision": "REWRITE"|"KEEP"|"REVIEW",
 "use": str|null, "reason": str}}}}}}
 
+DOCUMENT SKELETON (structure context only — where the text below sits;
+never rewrite the skeleton itself):
+{json.dumps(payload.get("skeleton", []), ensure_ascii=False)}
+
+THIS BATCH covers sections: {json.dumps(payload.get("batch_sections", []), ensure_ascii=False)}
+
 DICTIONARY:
 {json.dumps(payload["dictionary"], ensure_ascii=False)}
 
-LEAVES:
+LEAVES (every leaf below needs a decision):
 {json.dumps(payload["leaves"], ensure_ascii=False)}"""
 
 
