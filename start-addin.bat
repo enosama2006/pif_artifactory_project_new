@@ -11,8 +11,20 @@ where python >nul 2>nul || (
     pause & exit /b 1
 )
 
-echo [ADD-IN] Serving taskpane on http://localhost:3000  (Ctrl+C to stop)
-echo          In Word: Insert ^> My Add-ins ^> SHARED FOLDER ^> Anonymizer
+if not exist "taskpane.html" (
+    echo [ERROR] taskpane.html not found - run this script from the repo copy.
+    pause & exit /b 1
+)
+
+netstat -ano 2>nul | findstr /r ":3000 .*LISTENING" >nul && (
+    echo [WARNING] Port 3000 is already in use - the add-in server may already
+    echo           be running. If startup fails, close the other process
+    echo           or change the port here AND in addin\manifest.xml.
+    echo.
+)
+
+echo [ADD-IN] Serving taskpane on http://localhost:3000  - press Ctrl+C to stop
+echo          In Word: Insert / My Add-ins / SHARED FOLDER / Anonymizer
 echo.
 python -m http.server 3000
 pause
