@@ -55,25 +55,66 @@ async function checkHealth(verbose = false) {
 
 /* ── 1. anchoring pass ────────────────────────────────────────────────────── */
 
+/* Fault-tolerant anchoring:
+ * - small chunks, each in its own Word.run (one bad paragraph can't kill all);
+ * - a failing chunk is retried paragraph-by-paragraph, stubborn ones skipped
+ *   (empty paragraphs, field/TOC content, the trailing end mark…);
+ * - no `appearance` override (Hidden throws GeneralException on some builds);
+ * - already-anchored paragraphs (anz:*) are left untouched, so reruns are safe.
+ */
+const ANCHOR_CHUNK = 25;
+let anchorSeq = 0;
+
+async function anchorRange(start, end) {
+  let anchored = 0, skipped = 0;
+  await Word.run(async (ctx) => {
+    const paras = ctx.document.body.paragraphs;
+    paras.load("items/text");
+    await ctx.sync();
+    const slice = paras.items.slice(start, end);
+    slice.forEach(p => p.parentContentControlOrNullObject.load("isNullObject,tag"));
+    await ctx.sync();
+    for (const p of slice) {
+      const text = (p.text || "").trim();
+      const pcc = p.parentContentControlOrNullObject;
+      const already = !pcc.isNullObject && (pcc.tag || "").startsWith("anz:");
+      if (!text || already) { skipped++; continue; }
+      const cc = p.insertContentControl();
+      cc.tag = "anz:C_" + String(++anchorSeq).padStart(5, "0");
+      anchored++;
+    }
+    await ctx.sync();
+  });
+  return { anchored, skipped };
+}
+
 async function anchorDocument() {
-  let count = 0;
+  anchorSeq = 0;
+  let total = 0;
   await Word.run(async (ctx) => {
     const paras = ctx.document.body.paragraphs;
     paras.load("items");
     await ctx.sync();
-    paras.items.forEach(p => p.contentControls.load("items/tag"));
-    await ctx.sync();
-    paras.items.forEach((p, i) => {
-      const tagged = p.contentControls.items.some(c => (c.tag || "").startsWith("anz:"));
-      if (tagged) return;
-      const cc = p.insertContentControl();
-      cc.tag = "anz:C_" + String(i + 1).padStart(5, "0");
-      cc.appearance = "Hidden";
-      count++;
-    });
-    await ctx.sync();
+    total = paras.items.length;
   });
-  return count;
+
+  let anchored = 0, skipped = 0, failed = 0;
+  for (let start = 0; start < total; start += ANCHOR_CHUNK) {
+    const end = Math.min(start + ANCHOR_CHUNK, total);
+    try {
+      const r = await anchorRange(start, end);
+      anchored += r.anchored; skipped += r.skipped;
+    } catch (chunkErr) {
+      log(`Chunk ${start}-${end} failed (${fmtErr(chunkErr)}) — retrying one by one…`);
+      for (let i = start; i < end; i++) {
+        try {
+          const r = await anchorRange(i, i + 1);
+          anchored += r.anchored; skipped += r.skipped;
+        } catch { failed++; }
+      }
+    }
+  }
+  return { anchored, skipped, failed, total };
 }
 
 /* ── 2. run + live progress ───────────────────────────────────────────────── */
@@ -100,8 +141,18 @@ async function runPipeline() {
   show("metrics", false);
   try {
     log("Anchoring paragraphs with content controls…");
-    const anchored = await anchorDocument();
-    log(`Anchored ${anchored} paragraph(s).`);
+    let a = { anchored: 0, skipped: 0, failed: 0, total: 0 };
+    try {
+      a = await anchorDocument();
+      log(`Anchored ${a.anchored}/${a.total} paragraph(s)` +
+          (a.skipped ? `, ${a.skipped} skipped (empty/already tagged)` : "") +
+          (a.failed ? `, ${a.failed} refused by Word` : "") + ".");
+    } catch (anchorErr) {
+      // Anchoring is an optimization, not a prerequisite: continue without it —
+      // unanchored changes are listed for manual application.
+      log("WARNING: anchoring failed entirely (" + fmtErr(anchorErr) +
+          ") — continuing without anchors; changes will need manual apply.");
+    }
 
     log("Extracting OOXML and starting the run…");
     let ooxml = "";
@@ -135,7 +186,7 @@ async function runPipeline() {
       log("NOTE: stub mode — put GROQ_API_KEY in agent/.env for real extraction.");
     renderResults();
   } catch (e) {
-    log("ERROR: " + (e.message || e));
+    log("ERROR: " + fmtErr(e));
   } finally {
     $("runBtn").disabled = false;
   }
@@ -278,4 +329,16 @@ function intervene(type, target, payload) {
 function esc(s) {
   return String(s ?? "").replace(/[&<>"']/g,
     c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+
+/* Rich Office.js error formatting — GeneralException alone is useless;
+ * debugInfo carries the failing statement and surrounding trace. */
+function fmtErr(e) {
+  if (e && e.debugInfo) {
+    const d = e.debugInfo;
+    return `${e.code || e.name}: ${e.message}` +
+           (d.errorLocation ? ` @ ${d.errorLocation}` : "") +
+           (d.fullStatements ? ` | near: ${(d.fullStatements || []).slice(-1)[0]}` : "");
+  }
+  return (e && (e.message || e.code)) || String(e);
 }
