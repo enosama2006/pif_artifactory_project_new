@@ -1,1 +1,2 @@
-from .validate import AssembleResult, render_preview, validate_and_assemble
+from .validate import (AssembleResult, collapse_duplicate_placeholder,
+                       render_preview, validate_and_assemble)

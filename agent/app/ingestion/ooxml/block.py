@@ -22,6 +22,14 @@ from .._contract import Leaf, UnifiedDocument
 
 W = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
 
+# Word content-control prompt strings — UI chrome, not document content.
+_PLACEHOLDER_TEXTS = {
+    "Click or tap here to enter text.",
+    "Click here to enter text.",
+    "Choose an item.",
+    "Click or tap to enter a date.",
+}
+
 
 class OoxmlBlock:
     def to_usd(self, raw: bytes) -> UnifiedDocument:
@@ -62,7 +70,7 @@ class OoxmlBlock:
                     n = self._table(el, usd, n, section, anchors)
                 elif el.tag == f"{W}p" and id(el) not in table_ps:
                     text = _p_text(el)
-                    if not text.strip():
+                    if not text.strip() or text.strip() in _PLACEHOLDER_TEXTS:
                         continue
                     style = _p_style(el)
                     if origin != "body":
@@ -77,6 +85,7 @@ class OoxmlBlock:
                     n += 1
                     usd.leaves.append(Leaf(f"L_{n:06d}", kind, text, section,
                                            anchor=anchors.get(id(el))))
+        _drop_aggregate_duplicates(usd.leaves)
         return usd
 
     def _table(self, tbl, usd: UnifiedDocument, n: int, section: str, anchors):
@@ -102,7 +111,14 @@ class OoxmlBlock:
 
 
 def _anchor_map(root) -> dict[int, str]:
-    """{id(w:p): 'anz:…'} for every paragraph inside a tagged content control."""
+    """{id(w:p): 'anz:…'} for every paragraph inside a tagged content control.
+
+    INNERMOST tag wins: root.iter yields outer sdts before the sdts nested
+    inside them, so plain assignment (not setdefault) leaves each paragraph
+    with its deepest anchor. Cover pages nest paragraphs inside an outer
+    docPart sdt — mapping them all to the outer tag made several leaves share
+    one anchor and applying them clobbered each other (run 646d065f6ea4).
+    """
     out: dict[int, str] = {}
     for sdt in root.iter(f"{W}sdt"):
         pr = sdt.find(f"{W}sdtPr")
@@ -111,8 +127,30 @@ def _anchor_map(root) -> dict[int, str]:
         if not tag.startswith("anz:"):
             continue
         for p in sdt.iter(f"{W}p"):
-            out.setdefault(id(p), tag)
+            out[id(p)] = tag
     return out
+
+
+def _drop_aggregate_duplicates(leaves, window: int = 12) -> None:
+    """Drop a leaf whose text is exactly the concatenation of the next 2+ leaves.
+
+    Word cover pages surface the same content twice: once as a run-concatenated
+    aggregate paragraph and again as the individual paragraphs. Keeping both
+    double-counts every mention and produces conflicting rewrites.
+    """
+    i = 0
+    while i < len(leaves):
+        agg = leaves[i].text
+        joined = ""
+        j = i + 1
+        while j < len(leaves) and j <= i + window and len(joined) < len(agg):
+            joined += leaves[j].text
+            j += 1
+            if joined == agg and j - i - 1 >= 2:
+                del leaves[i]
+                break
+        else:
+            i += 1
 
 
 def _p_text(p) -> str:

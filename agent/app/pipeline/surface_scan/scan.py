@@ -15,8 +15,11 @@ from dataclasses import dataclass
 AR_PREFIX = r"(?:و|ف|ب|ل|ك)?(?:ال|لل)?"
 _DIACRITICS = set("ًٌٍَُِّْـ")
 _FOLD = {"أ": "ا", "إ": "ا", "آ": "ا", "ة": "ه"}
-_BOUND_L = r"(?<![\w؀-ۿ])"
-_BOUND_R = r"(?![\w؀-ۿ])"
+# Letters/underscore bound a word; DIGITS do NOT — Word run-concatenation
+# produces text like "2025Data Governance Policy" and the second mention must
+# still match (real-document finding, run 646d065f6ea4).
+_BOUND_L = r"(?<![A-Za-z_؀-ۿ])"
+_BOUND_R = r"(?![A-Za-z_؀-ۿ])"
 
 
 @dataclass

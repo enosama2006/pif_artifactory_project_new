@@ -22,15 +22,33 @@ def build_inventory_prompt(payload: dict) -> str:
 Below is ONE section of an institutional document as JSON leaves.
 
 Identify every ACTOR: named person, the owning organisation, internal org
-units, external bodies, named internal documents, named systems. For each,
-report the ROLE the document itself assigns it (the role is what will replace
-the name). Do NOT decide what to hide; extraction only. Never skip an actor
-because you are unsure — include it with your best role guess.
+units, external bodies, named internal documents, and named internal SYSTEMS
+or platforms (portals, hubs, intranets, registries, tools with a proper name).
+For each, report the ROLE the document itself assigns it (the role is what
+will replace the name). Do NOT decide what to hide; extraction only. Never
+skip an actor because you are unsure — include it with your best role guess.
+
+VARIANTS are critical: list EVERY surface form of the actor, including
+defined abbreviations, acronyms, short forms with a suffix dropped or
+changed (a unit may appear without its type word, or with a different one:
+"…Department" also appearing bare, or as "…Division"), and possessive or
+prefixed uses. A variant you omit will survive anonymization.
+
+ROLE must be DISTINCTIVE, not a bare type word: describe the function
+("technology department", "records-management unit", "national data
+regulator"), never just "department" or "committee" — the role becomes the
+replacement text and must still distinguish actors of the same type.
+
+Do NOT extract generic structural artifacts of the document itself — table
+of contents, appendices, version/approval/amendment sheets, generic
+registers or lists — unless the artifact's own title contains an
+organisation-identifying name. Their titles reveal no identity and
+replacing them damages the document.
 
 Return ONE JSON object, nothing else:
 {{"actors": [{{"name": str, "kind": one of {sorted(ACTOR_KINDS)},
-"role": str (short, in the document's language), "variants": [str, every
-surface form seen in THIS section]}}]}}
+"role": str (short, distinctive, in the document's language),
+"variants": [str, every surface form seen in THIS section]}}]}}
 
 SECTION:
 {json.dumps(payload, ensure_ascii=False)}"""
