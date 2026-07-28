@@ -7,9 +7,9 @@
   <Id>7f2c9a10-4b3e-4f7a-9c1d-2e8b5a6d3f01</Id>
   <Version>0.1.0</Version>
   <ProviderName>Anonymizer</ProviderName>
-  <DefaultLocale>ar-SA</DefaultLocale>
-  <DisplayName DefaultValue="Anonymizer — إخفاء الهوية"/>
-  <Description DefaultValue="تجريد الوثائق المؤسسية من الهويات عبر وكيل مخصص"/>
+  <DefaultLocale>en-US</DefaultLocale>
+  <DisplayName DefaultValue="Anonymizer"/>
+  <Description DefaultValue="Anonymize institutional documents through a dedicated agent"/>
   <Hosts>
     <Host Name="Document"/>
   </Hosts>
@@ -54,10 +54,10 @@
       </bt:Urls>
       <bt:ShortStrings>
         <bt:String id="grpLabel" DefaultValue="Anonymizer"/>
-        <bt:String id="btnLabel" DefaultValue="إخفاء الهوية"/>
+        <bt:String id="btnLabel" DefaultValue="Anonymizer"/>
       </bt:ShortStrings>
       <bt:LongStrings>
-        <bt:String id="btnTip" DefaultValue="افتح لوحة التجريد وابدأ المعالجة"/>
+        <bt:String id="btnTip" DefaultValue="Open the anonymization pane and start processing"/>
       </bt:LongStrings>
     </Resources>
   </VersionOverrides>

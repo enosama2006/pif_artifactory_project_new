@@ -34,13 +34,17 @@ python -m http.server 3000
 
 **Use it:**
 
-1. Open the document → ribbon button **إخفاء الهوية** → the pane opens.
-2. زر «فحص» يتأكد من الوكيل ويعرض وضع النموذج (Groq / تجريبي).
-3. «ابدأ التجريد»: يرسّخ الفقرات بوسوم `anz:C_…`، يرسل OOXML، ويعرض
-   المقاييس + القاموس + قائمة المراجعة + التغييرات.
-4. عدّل المسميات في القاموس (تسجَّل كتدخلات)، ثم «طبّق الكل» — تُكتب
-   كتغييرات متعقبة تراجعها بواجهة وورد الأصلية.
-5. «أزل وسوم الترسيخ» عند الانتهاء.
+1. Open the document → ribbon button **Anonymizer** → the pane opens; the
+   header pill shows live agent status (online/offline + llm mode).
+2. **Run anonymization**: anchors paragraphs with `anz:C_…` content controls,
+   sends the OOXML, and renders live stage progress, then metrics chips +
+   identity dictionary + review queue + proposed changes.
+3. Edit placeholders in the dictionary (recorded as interventions — one
+   rename updates every pending change), then **Apply all** — written as
+   tracked changes you review with Word's native Review tab.
+4. **Clean anchors** when finished.
+
+Full setup and troubleshooting: [`../RUNBOOK.md`](../RUNBOOK.md).
 
 ## Files
 

@@ -1,56 +1,140 @@
 <!DOCTYPE html>
-<html lang="ar" dir="rtl">
+<html lang="en">
 <head>
 <meta charset="UTF-8">
 <title>Anonymizer</title>
 <script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
 <style>
-  :root { --ink:#1a1a2e; --accent:#0b7a5c; --warn:#b3541e; --line:#e2e2ea; }
-  * { box-sizing:border-box; font-family:"Segoe UI", Tahoma, sans-serif; }
-  body { margin:0; padding:12px; color:var(--ink); font-size:13px; }
-  h2 { font-size:15px; margin:0 0 8px; }
-  h3 { font-size:13px; margin:14px 0 6px; border-bottom:1px solid var(--line); padding-bottom:4px; }
-  button { border:0; border-radius:6px; padding:8px 12px; cursor:pointer; font-size:13px; }
-  .primary { background:var(--accent); color:#fff; width:100%; }
-  .primary:disabled { background:#9bb8af; }
-  .mini { background:#eef2f0; padding:3px 8px; font-size:12px; margin-inline-start:4px; }
-  #status { margin:10px 0; padding:8px; background:#f6f7f9; border-radius:6px;
-            white-space:pre-wrap; max-height:130px; overflow-y:auto; font-size:12px; }
-  .card { border:1px solid var(--line); border-radius:6px; padding:8px; margin:6px 0; }
-  .card .before { color:#777; text-decoration:line-through; font-size:12px; }
-  .card .after { color:var(--accent); font-weight:600; }
-  .card.review { border-color:var(--warn); background:#fff8f2; }
-  .tag { display:inline-block; background:#eef2f0; border-radius:4px;
-         padding:1px 6px; font-size:11px; color:#555; }
-  table { width:100%; border-collapse:collapse; font-size:12px; }
-  td,th { border-bottom:1px solid var(--line); padding:4px; text-align:right; }
-  input.ph { width:100%; border:1px solid var(--line); border-radius:4px; padding:3px 6px; }
-  #serverRow { display:flex; gap:6px; margin-bottom:8px; }
-  #serverRow input { flex:1; border:1px solid var(--line); border-radius:6px; padding:6px; direction:ltr; }
-  .muted { color:#888; font-size:11px; }
+  :root {
+    --ink:#16202b; --sub:#5b6672; --line:#e4e8ee; --bg:#f7f9fb;
+    --accent:#0b7a5c; --accent-soft:#e5f3ee; --warn:#b3541e; --warn-soft:#fdf1e7;
+    --err:#b4232a; --ok:#1d9d5f;
+  }
+  * { box-sizing:border-box; font-family:"Segoe UI", -apple-system, sans-serif; }
+  body { margin:0; background:var(--bg); color:var(--ink); font-size:13px; }
+
+  header { position:sticky; top:0; z-index:5; background:#fff;
+           border-bottom:1px solid var(--line); padding:10px 14px; }
+  .brand { display:flex; align-items:center; justify-content:space-between; }
+  .brand h1 { font-size:15px; margin:0; letter-spacing:.2px; }
+  .pill { display:inline-flex; align-items:center; gap:6px; font-size:11px;
+          border:1px solid var(--line); border-radius:999px; padding:3px 10px;
+          background:#fff; color:var(--sub); }
+  .dot { width:8px; height:8px; border-radius:50%; background:#c3c9d1; }
+  .dot.on { background:var(--ok); } .dot.off { background:var(--err); }
+
+  main { padding:12px 14px 40px; }
+  .row { display:flex; gap:6px; margin-bottom:10px; }
+  .row input { flex:1; border:1px solid var(--line); border-radius:8px;
+               padding:7px 10px; font-size:12px; background:#fff; }
+  button { border:0; border-radius:8px; cursor:pointer; font-size:13px;
+           transition:filter .15s; }
+  button:hover { filter:brightness(.95); }
+  .primary { width:100%; padding:11px; background:var(--accent); color:#fff;
+             font-weight:600; box-shadow:0 1px 2px rgba(0,0,0,.08); }
+  .primary:disabled { background:#a9c4bb; cursor:default; }
+  .ghost { background:#fff; border:1px solid var(--line); padding:5px 10px;
+           font-size:12px; color:var(--ink); }
+  .ghost.small { font-size:11px; padding:3px 8px; }
+
+  /* pipeline progress */
+  #pipeline { background:#fff; border:1px solid var(--line); border-radius:10px;
+              padding:10px 12px; margin:12px 0; display:none; }
+  .step { display:flex; align-items:center; gap:9px; padding:5px 0; color:var(--sub); }
+  .step .ico { width:18px; height:18px; border-radius:50%; border:2px solid var(--line);
+               display:inline-flex; align-items:center; justify-content:center;
+               font-size:11px; flex:none; background:#fff; }
+  .step.done { color:var(--ink); }
+  .step.done .ico { border-color:var(--ok); background:var(--ok); color:#fff; }
+  .step.current { color:var(--ink); font-weight:600; }
+  .step.current .ico { border-color:var(--accent); }
+  .step.current .ico::after { content:""; width:8px; height:8px; border-radius:50%;
+      background:var(--accent); animation:pulse 1s infinite alternate; }
+  .step.error .ico { border-color:var(--err); background:var(--err); color:#fff; }
+  .step .msg { font-size:11px; color:var(--sub); margin-inline-start:auto;
+               max-width:55%; text-align:right; overflow:hidden;
+               text-overflow:ellipsis; white-space:nowrap; }
+  @keyframes pulse { from {opacity:.4} to {opacity:1} }
+
+  /* metrics chips */
+  #metrics { display:none; flex-wrap:wrap; gap:6px; margin:10px 0; }
+  .chip { background:#fff; border:1px solid var(--line); border-radius:8px;
+          padding:6px 10px; font-size:11px; color:var(--sub); }
+  .chip b { display:block; font-size:15px; color:var(--ink); }
+  .chip.good b { color:var(--ok); } .chip.warn b { color:var(--warn); }
+
+  section { display:none; margin-top:14px; }
+  section h2 { font-size:13px; margin:0 0 6px; display:flex; align-items:center; gap:6px; }
+  .badge { background:var(--accent-soft); color:var(--accent); border-radius:999px;
+           padding:1px 8px; font-size:11px; font-weight:600; }
+
+  .card { background:#fff; border:1px solid var(--line); border-radius:10px;
+          padding:9px 11px; margin:7px 0; }
+  .card .before { color:var(--sub); text-decoration:line-through; font-size:12px;
+                  word-break:break-word; }
+  .card .after { color:var(--accent); font-weight:600; font-size:12.5px;
+                 margin:3px 0 7px; word-break:break-word; }
+  .card .anchor { font-size:10px; color:#98a1ab; }
+  .card.review { border-inline-start:3px solid var(--warn); background:var(--warn-soft); }
+  .card.applied { opacity:.45; }
+  .card.rejected { opacity:.3; }
+  .actions { display:flex; gap:5px; }
+
+  table { width:100%; border-collapse:collapse; font-size:12px; background:#fff;
+          border:1px solid var(--line); border-radius:10px; overflow:hidden; }
+  th { background:var(--bg); color:var(--sub); font-weight:600; font-size:11px; }
+  td,th { border-bottom:1px solid var(--line); padding:6px 8px; text-align:left; }
+  tr:last-child td { border-bottom:0; }
+  input.ph { width:100%; border:1px solid var(--line); border-radius:6px;
+             padding:4px 6px; font-size:12px; }
+
+  #log { margin-top:14px; background:#101418; color:#c9d4de; border-radius:10px;
+         padding:9px 11px; font:11px/1.6 Consolas, monospace; white-space:pre-wrap;
+         max-height:140px; overflow-y:auto; display:none; }
+  .muted { color:var(--sub); font-size:12px; }
+  .toolbar { display:flex; gap:6px; margin:6px 0 2px; }
 </style>
 </head>
 <body>
-  <h2>🕶️ إخفاء الهوية</h2>
-  <div id="serverRow">
-    <input id="serverUrl" value="http://localhost:8080" spellcheck="false">
-    <button class="mini" onclick="checkHealth()">فحص</button>
-  </div>
-  <button id="runBtn" class="primary" onclick="runPipeline()">ابدأ التجريد</button>
-  <div id="status">جاهز. تأكد أن الوكيل يعمل ثم اضغط «ابدأ التجريد».</div>
+  <header>
+    <div class="brand">
+      <h1>Anonymizer</h1>
+      <span class="pill"><span id="agentDot" class="dot"></span><span id="agentState">checking…</span></span>
+    </div>
+  </header>
 
-  <div id="results" style="display:none">
-    <h3>القاموس — الهويات المكتشفة <span id="actorCount" class="tag"></span></h3>
-    <div id="dict"></div>
+  <main>
+    <div class="row">
+      <input id="serverUrl" value="http://localhost:8080" spellcheck="false">
+      <button class="ghost" onclick="checkHealth(true)">Check</button>
+    </div>
 
-    <h3>قائمة المراجعة <span id="reviewCount" class="tag"></span></h3>
-    <div id="review"></div>
+    <button id="runBtn" class="primary" onclick="runPipeline()">▶ Run anonymization</button>
 
-    <h3>التغييرات المقترحة <span id="changeCount" class="tag"></span></h3>
-    <button class="mini" onclick="applyAll()">✓ طبّق الكل كتغييرات متعقبة</button>
-    <button class="mini" onclick="removeAnchors()">🧹 أزل وسوم الترسيخ</button>
-    <div id="changes"></div>
-  </div>
+    <div id="pipeline"></div>
+    <div id="metrics"></div>
+
+    <section id="secDict">
+      <h2>Identity dictionary <span id="actorCount" class="badge"></span></h2>
+      <div id="dict"></div>
+    </section>
+
+    <section id="secReview">
+      <h2>Review queue <span id="reviewCount" class="badge"></span></h2>
+      <div id="review"></div>
+    </section>
+
+    <section id="secChanges">
+      <h2>Proposed changes <span id="changeCount" class="badge"></span></h2>
+      <div class="toolbar">
+        <button class="ghost" onclick="applyAll()">✓ Apply all (tracked changes)</button>
+        <button class="ghost" onclick="removeAnchors()">Clean anchors</button>
+      </div>
+      <div id="changes"></div>
+    </section>
+
+    <div id="log"></div>
+  </main>
 
 <script src="taskpane.js"></script>
 </body>

@@ -1,36 +1,55 @@
 /* Anonymizer taskpane — plain Office.js, no build step.
  *
  * Flow (docs/DESIGN_repo_and_ux.md):
- *  1. ANCHOR: wrap every paragraph in a content control tagged anz:C_NNNNN —
- *     the agent reads the tags from the OOXML, so applying is by tag lookup,
- *     never text search.
- *  2. UPLOAD: getOoxml() → POST {server}/runs → full result.
- *  3. REVIEW: dictionary first (rename = one fix for all mentions), then the
- *     changes list; every user action → POST /interventions.
- *  4. APPLY: tracked changes via the anchors; Word's native accept/reject
- *     remains the final safety net.
+ *  1. ANCHOR   wrap every paragraph in a content control tagged anz:C_NNNNN —
+ *              the agent reads the tags from the OOXML, so applying is by tag
+ *              lookup, never text search.
+ *  2. UPLOAD   getOoxml() → POST {server}/runs, then poll GET /runs/{id} to
+ *              render live stage progress.
+ *  3. REVIEW   dictionary first (a rename fixes every mention), then the
+ *              changes list; every user action → POST /interventions.
+ *  4. APPLY    tracked changes through the anchors; Word's native
+ *              accept/reject stays the final safety net.
  */
 /* global Office, Word, fetch, document */
 
-let RUN = null;          // last /runs response
+let RUN = null;                    // completed run result
 let SERVER = "http://localhost:8080";
+const STAGE_LABELS = {
+  ingest: "Ingest — leaf inventory",
+  inventory: "Actor inventory (LLM)",
+  surface_scan: "Surface scan",
+  classify_rules: "Classify + breakage rules",
+  decide: "Decide (LLM)",
+  assemble: "Validate & assemble",
+};
 
 const $ = (id) => document.getElementById(id);
-const log = (msg, append = true) => {
-  const el = $("status");
-  el.textContent = append ? (el.textContent + "\n" + msg) : msg;
+const show = (id, on = true) => { $(id).style.display = on ? "block" : "none"; };
+const log = (msg) => {
+  const el = $("log");
+  el.style.display = "block";
+  el.textContent += (el.textContent ? "\n" : "") + msg;
   el.scrollTop = el.scrollHeight;
 };
 
-Office.onReady(() => log("جاهز. تأكد أن الوكيل يعمل ثم اضغط «ابدأ التجريد».", false));
+Office.onReady(() => {
+  checkHealth();
+  setInterval(checkHealth, 8000);   // live agent status in the header pill
+});
 
-async function checkHealth() {
+async function checkHealth(verbose = false) {
   SERVER = $("serverUrl").value.replace(/\/+$/, "");
+  const dot = $("agentDot"), state = $("agentState");
   try {
-    const r = await (await fetch(SERVER + "/health")).json();
-    log(`✅ الوكيل يعمل — وضع النموذج: ${r.llm_mode === "groq" ? "Groq حقيقي" : "تجريبي (بلا مفتاح)"}`, false);
-  } catch (e) {
-    log("⛔ تعذر الوصول للوكيل على " + SERVER + "\nشغّله بـ: uvicorn app.api.routes:app --port 8080", false);
+    const r = await (await fetch(SERVER + "/health", { cache: "no-store" })).json();
+    dot.className = "dot on";
+    state.textContent = `online · ${r.llm_mode}${r.llm_mode === "stub" ? " (no key)" : ""}`;
+    if (verbose) log(`Agent online — mode=${r.llm_mode}, model=${r.model}, v${r.version}`);
+  } catch {
+    dot.className = "dot off";
+    state.textContent = "offline";
+    if (verbose) log(`Agent unreachable at ${SERVER}. Start it with:\n  uvicorn app.api.routes:app --port 8080`);
   }
 }
 
@@ -42,38 +61,49 @@ async function anchorDocument() {
     const paras = ctx.document.body.paragraphs;
     paras.load("items");
     await ctx.sync();
-    for (let i = 0; i < paras.items.length; i++) {
-      const p = paras.items[i];
-      if (p.contentControls) {
-        p.contentControls.load("items/tag");
-      }
-    }
+    paras.items.forEach(p => p.contentControls.load("items/tag"));
     await ctx.sync();
-    for (let i = 0; i < paras.items.length; i++) {
-      const p = paras.items[i];
-      const already = p.contentControls.items.some(c => (c.tag || "").startsWith("anz:"));
-      if (already) continue;
+    paras.items.forEach((p, i) => {
+      const tagged = p.contentControls.items.some(c => (c.tag || "").startsWith("anz:"));
+      if (tagged) return;
       const cc = p.insertContentControl();
       cc.tag = "anz:C_" + String(i + 1).padStart(5, "0");
       cc.appearance = "Hidden";
       count++;
-    }
+    });
     await ctx.sync();
   });
   return count;
 }
 
-/* ── 2. run ───────────────────────────────────────────────────────────────── */
+/* ── 2. run + live progress ───────────────────────────────────────────────── */
+
+function renderPipeline(stageNames, rec) {
+  show("pipeline");
+  const done = new Set((rec?.stages || []).map(s => s.stage));
+  const msgs = Object.fromEntries((rec?.stages || []).map(s => [s.stage, s.message]));
+  $("pipeline").innerHTML = stageNames.map(name => {
+    let cls = "step", ico = "";
+    if (done.has(name)) { cls += " done"; ico = "✓"; }
+    else if (rec?.current_stage === name) { cls += " current"; }
+    else if (rec?.status === "error" && rec?.error?.startsWith(name)) { cls += " error"; ico = "!"; }
+    return `<div class="${cls}"><span class="ico">${ico}</span>` +
+           `<span>${STAGE_LABELS[name] || name}</span>` +
+           `<span class="msg" title="${esc(msgs[name] || "")}">${esc(msgs[name] || "")}</span></div>`;
+  }).join("");
+}
 
 async function runPipeline() {
   SERVER = $("serverUrl").value.replace(/\/+$/, "");
   $("runBtn").disabled = true;
+  ["secDict", "secReview", "secChanges"].forEach(s => show(s, false));
+  show("metrics", false);
   try {
-    log("① ترسيخ الفقرات بوسوم content controls …", false);
+    log("Anchoring paragraphs with content controls…");
     const anchored = await anchorDocument();
-    log(`   تم ترسيخ ${anchored} فقرة`);
+    log(`Anchored ${anchored} paragraph(s).`);
 
-    log("② استخراج OOXML وإرساله للوكيل …");
+    log("Extracting OOXML and starting the run…");
     let ooxml = "";
     await Word.run(async (ctx) => {
       const x = ctx.document.body.getOoxml();
@@ -81,73 +111,97 @@ async function runPipeline() {
       ooxml = x.value;
     });
 
-    log("③ الوكيل يعالج (قد يستغرق دقيقة لمستند كبير) …");
-    const resp = await fetch(SERVER + "/runs", {
+    const start = await (await fetch(SERVER + "/runs", {
       method: "POST",
       headers: { "Content-Type": "application/xml" },
       body: ooxml,
-    });
-    RUN = await resp.json();
-    if (!RUN.ok) throw new Error(RUN.error || "فشل التشغيل");
+    })).json();
+    if (!start.ok) throw new Error(start.error || "failed to start the run");
+    const stageNames = start.stage_names || Object.keys(STAGE_LABELS);
+    renderPipeline(stageNames, start);
 
-    const m = RUN.metrics;
-    log(`✅ اكتمل — أوراق: ${m.leaves} | تغطية: ${m.coverage} | استبدالات: ${m.rewrites}` +
-        ` | مراجعة: ${m.review} | خسائر صامتة: ${m.silent_losses}` +
-        `\n   وضع النموذج: ${RUN.llm_mode === "groq" ? "Groq" : "تجريبي — ضع GROQ_API_KEY في agent/.env"}`);
-    RUN.stages.forEach(s => log(`   [${s.stage}] ${s.message}`));
-    render();
+    // poll for live status
+    let rec = start;
+    while (rec.status === "running") {
+      await new Promise(r => setTimeout(r, 700));
+      rec = await (await fetch(`${SERVER}/runs/${start.run_id}`, { cache: "no-store" })).json();
+      renderPipeline(stageNames, rec);
+    }
+    if (rec.status === "error") throw new Error(rec.error || "run failed");
+
+    RUN = { run_id: rec.run_id, llm_mode: rec.llm_mode, ...rec.result };
+    log(`Run ${rec.run_id} completed (mode=${rec.llm_mode}).`);
+    if (rec.llm_mode === "stub")
+      log("NOTE: stub mode — put GROQ_API_KEY in agent/.env for real extraction.");
+    renderResults();
   } catch (e) {
-    log("⛔ " + (e.message || e));
+    log("ERROR: " + (e.message || e));
   } finally {
     $("runBtn").disabled = false;
   }
 }
 
-/* ── 3. render dictionary / review / changes ─────────────────────────────── */
+/* ── 3. results: metrics / dictionary / review / changes ─────────────────── */
 
-function render() {
-  $("results").style.display = "block";
+function renderResults() {
+  const m = RUN.metrics || {};
+  $("metrics").innerHTML =
+    chip("Leaves", m.leaves) +
+    chip("Coverage", m.coverage, m.coverage === 1 ? "good" : "warn") +
+    chip("Rewrites", m.rewrites) +
+    chip("Review", m.review, m.review ? "warn" : "good") +
+    chip("Silent losses", m.silent_losses, m.silent_losses ? "warn" : "good");
+  $("metrics").style.display = "flex";
+
   const actors = Object.values(RUN.actors || {});
   $("actorCount").textContent = actors.length;
   $("dict").innerHTML = actors.length
-    ? "<table><tr><th>الاسم</th><th>الدور</th><th>المسمى البديل</th><th></th></tr>" +
+    ? "<table><tr><th>Name</th><th>Role(s)</th><th>Placeholder</th><th></th></tr>" +
       actors.map(a =>
-        `<tr><td>${esc(a.name)}</td><td>${esc((a.roles || []).join("، "))}</td>` +
+        `<tr><td>${esc(a.name)}</td><td>${esc((a.roles || []).join(", "))}</td>` +
         `<td><input class="ph" id="ph_${a.actor_id}" value="${esc(a.placeholder)}"></td>` +
-        `<td><button class="mini" onclick="renamePlaceholder('${a.actor_id}')">حفظ</button></td></tr>`
+        `<td><button class="ghost small" onclick="renamePlaceholder('${a.actor_id}')">Save</button></td></tr>`
       ).join("") + "</table>"
-    : "<div class='muted'>لا هويات (وضع تجريبي؟ ضع مفتاح Groq وأعد التشغيل)</div>";
+    : "<div class='muted'>No actors extracted (stub mode? set GROQ_API_KEY and rerun).</div>";
+  show("secDict");
 
   const rq = RUN.review_queue || [];
   $("reviewCount").textContent = rq.length;
   $("review").innerHTML = rq.length
     ? rq.map(r =>
         `<div class="card review"><div>${esc(r.text)}</div>` +
-        `<div class="muted">السبب: ${esc(r.reason)}</div></div>`).join("")
-    : "<div class='muted'>لا شيء يحتاج مراجعة 🎉</div>";
+        `<div class="muted">Reason: ${esc(r.reason)}</div></div>`).join("")
+    : "<div class='muted'>Nothing needs review 🎉</div>";
+  show("secReview");
 
   const pl = RUN.payload || [];
   $("changeCount").textContent = pl.length;
   $("changes").innerHTML = pl.map((p, i) =>
     `<div class="card" id="chg_${i}">` +
-    `<span class="tag">${esc(p.anchor || p.leaf_id)}</span>` +
     `<div class="before">${esc(p.before)}</div>` +
     `<div class="after">${esc(p.after)}</div>` +
-    `<button class="mini" onclick="applyOne(${i})">✓ طبّق</button>` +
-    `<button class="mini" onclick="goTo(${i})">👁 اذهب</button>` +
-    `<button class="mini" onclick="reject(${i})">✗ ارفض</button>` +
-    `</div>`).join("");
+    `<div class="actions">` +
+    `<button class="ghost small" onclick="applyOne(${i})">✓ Apply</button>` +
+    `<button class="ghost small" onclick="goTo(${i})">Locate</button>` +
+    `<button class="ghost small" onclick="reject(${i})">✗ Reject</button>` +
+    `<span class="anchor" style="margin-inline-start:auto">${esc(p.anchor || p.leaf_id)}</span>` +
+    `</div></div>`).join("") ||
+    "<div class='muted'>No changes proposed.</div>";
+  show("secChanges");
 }
+
+const chip = (label, value, cls = "") =>
+  `<span class="chip ${cls}"><b>${value ?? "—"}</b>${label}</span>`;
 
 /* ── 4. apply via anchors as tracked changes ─────────────────────────────── */
 
 async function withCc(anchor, fn) {
   await Word.run(async (ctx) => {
-    ctx.document.changeTrackingMode = "TrackAll";
+    try { ctx.document.changeTrackingMode = "TrackAll"; } catch { /* WordApi<1.4 */ }
     const ccs = ctx.document.contentControls.getByTag(anchor);
     ccs.load("items");
     await ctx.sync();
-    if (!ccs.items.length) throw new Error("لم يُعثر على الوسم " + anchor);
+    if (!ccs.items.length) throw new Error("anchor not found: " + anchor);
     await fn(ctx, ccs.items[0]);
     await ctx.sync();
   });
@@ -155,44 +209,48 @@ async function withCc(anchor, fn) {
 
 async function applyOne(i) {
   const p = RUN.payload[i];
-  if (!p.anchor) { log("⛔ لا وسم لهذه الورقة (ترويسة صفحة؟) — طبّقها يدويًا: " + p.after); return; }
+  if (!p.anchor) {
+    log(`No anchor for ${p.leaf_id} (page header/footer?) — apply manually: ${p.after}`);
+    return;
+  }
   try {
     await withCc(p.anchor, async (_ctx, cc) => cc.insertText(p.after, "Replace"));
-    $("chg_" + i).style.opacity = 0.45;
+    $("chg_" + i).classList.add("applied");
     intervene("accept_leaf", p.leaf_id, {});
-  } catch (e) { log("⛔ " + e.message); }
+  } catch (e) { log("ERROR: " + e.message); }
 }
 
 async function applyAll() {
   for (let i = 0; i < (RUN.payload || []).length; i++) {
     const el = $("chg_" + i);
-    if (el && el.style.opacity !== "0.45") await applyOne(i);
+    if (el && !el.classList.contains("applied") && !el.classList.contains("rejected"))
+      await applyOne(i);
   }
-  log("✅ طُبقت كل التغييرات كتغييرات متعقبة — راجعها من تبويب «مراجعة» في وورد");
+  log("All changes applied as tracked changes — review them in Word's Review tab.");
 }
 
 async function goTo(i) {
   const p = RUN.payload[i];
   if (!p.anchor) return;
-  try { await withCc(p.anchor, async (_c, cc) => cc.select()); } catch (e) { log("⛔ " + e.message); }
+  try { await withCc(p.anchor, async (_c, cc) => cc.select()); }
+  catch (e) { log("ERROR: " + e.message); }
 }
 
 function reject(i) {
   const p = RUN.payload[i];
-  $("chg_" + i).style.opacity = 0.3;
+  $("chg_" + i).classList.add("rejected");
   intervene("reject_leaf", p.leaf_id, {});
 }
 
 function renamePlaceholder(actorId) {
   const v = $("ph_" + actorId).value.trim();
-  intervene("rename_placeholder", actorId, { placeholder: v });
-  // local re-render: apply the rename to pending payload previews
   const a = RUN.actors[actorId];
   const old = a.placeholder;
   a.placeholder = v;
   (RUN.payload || []).forEach(p => { p.after = p.after.split(old).join(v); });
-  render();
-  log(`✏️ ${esc(a.name)} ← ${v} (سُجّل التدخل)`);
+  intervene("rename_placeholder", actorId, { placeholder: v });
+  renderResults();
+  log(`Renamed: ${a.name} → ${v} (intervention recorded).`);
 }
 
 async function removeAnchors() {
@@ -203,7 +261,7 @@ async function removeAnchors() {
     ccs.items.forEach(c => { if ((c.tag || "").startsWith("anz:")) c.delete(true); });
     await ctx.sync();
   });
-  log("🧹 أُزيلت وسوم الترسيخ (بقي المحتوى)");
+  log("Anchors removed (content kept).");
 }
 
 /* ── util ─────────────────────────────────────────────────────────────────── */

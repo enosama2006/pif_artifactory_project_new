@@ -38,6 +38,8 @@ wired behind the provider boundary (`GROQ_API_KEY` in `agent/.env`, loaded
 automatically) with a no-key stub mode for wiring checks. The add-in UI and
 the golden corpus are the next milestones (`docs/DESIGN_repo_and_ux.md` §6).
 
+**Full setup, run and troubleshooting guide: [`RUNBOOK.md`](RUNBOOK.md).**
+
 ## Development
 
 ```bash

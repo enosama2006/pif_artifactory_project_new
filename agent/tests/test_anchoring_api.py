@@ -57,17 +57,23 @@ def test_api_run_returns_anchored_payload():
     client = TestClient(app)
     assert client.get("/health").json()["ok"] is True
 
-    r = client.post("/runs", content=PKG.encode("utf-8"),
+    # wait=1 runs inline (the add-in instead polls GET /runs/{id} for progress)
+    r = client.post("/runs?wait=1", content=PKG.encode("utf-8"),
                     headers={"Content-Type": "application/xml"}).json()
     assert r["ok"] is True
-    assert r["metrics"]["coverage"] == 1.0
-    assert r["metrics"]["silent_losses"] == 0
+    assert r["status"] == "completed"
+    assert [s["stage"] for s in r["stages"]] == [
+        "ingest", "inventory", "surface_scan", "classify_rules", "decide", "assemble"]
+    m = r["result"]["metrics"]
+    assert m["coverage"] == 1.0 and m["silent_losses"] == 0
 
-    # stub mode → classify still fires on "قرار رقم 47" via the candidate sweep;
-    # payload items (if any) must carry the client anchors, and interventions land
+    # live-status endpoint reflects the finished run
+    status = client.get(f"/runs/{r['run_id']}").json()
+    assert status["status"] == "completed"
+
     iv = client.post(f"/runs/{r['run_id']}/interventions",
                      json={"type": "annotate", "target": "L_000001",
-                           "payload": {}, "note": "تجربة"}).json()
+                           "payload": {}, "note": "test"}).json()
     assert iv["ok"] is True
-    for p in r["payload"]:
-        assert "after" in p and "before" in p
+    for p in r["result"]["payload"]:
+        assert "after" in p and "before" in p and "anchor" in p

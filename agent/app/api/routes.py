@@ -1,18 +1,19 @@
 """REST surface — the agent's only public boundary for the Word Add-in.
 
-MVP contract (synchronous — institutional documents run in seconds):
-
-  GET  /health                        liveness + LLM mode
-  POST /runs   (body = document)      run the full pipeline, return everything
+  GET  /health                        liveness + LLM mode + model
+  POST /runs                          start a run (async); ?wait=1 runs inline
+  GET  /runs/{run_id}                 live status: stage progress, then result
   POST /runs/{run_id}/interventions   record a user action (durable row)
 
-The body of POST /runs is the document itself in any accepted form:
-.docx bytes, raw word/document.xml, or the Office.js getOoxml() package.
-CORS is wide open for development; tighten before any shared deployment.
+POST /runs body = the document itself: .docx bytes, raw word/document.xml,
+or the Office.js getOoxml() package. The add-in polls GET /runs/{id} to show
+live stage progress. CORS is wide open for development.
 
 Run: uvicorn app.api.routes:app --port 8080   (from the agent/ directory)
 """
+import asyncio
 import sys
+import tempfile
 import uuid
 from pathlib import Path
 
@@ -22,7 +23,7 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-app = FastAPI(title="anonymizer-agent", version="0.2.0")
+app = FastAPI(title="anonymizer-agent", version="0.3.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"],
                    allow_methods=["*"], allow_headers=["*"])
 
@@ -30,6 +31,11 @@ INTERVENTION_TYPES = {
     "rename_placeholder", "merge_actors", "correct_role", "add_surface",
     "ignore_actor", "accept_leaf", "reject_leaf", "edit_leaf", "annotate",
 }
+
+STAGE_NAMES = ["ingest", "inventory", "surface_scan",
+               "classify_rules", "decide", "assemble"]
+
+RUNS: dict[str, dict] = {}   # in-memory run registry (results also hit SQLite)
 
 
 class Intervention(BaseModel):
@@ -41,58 +47,82 @@ class Intervention(BaseModel):
 
 @app.get("/health")
 def health():
+    from .. import config
     from ..llm import get_llm
-    return {"ok": True, "llm_mode": "stub" if get_llm().is_stub else "groq"}
+    return {"ok": True,
+            "llm_mode": "stub" if get_llm().is_stub else "groq",
+            "model": config.LLM_MODEL,
+            "version": app.version}
 
 
-@app.post("/runs")
-async def create_run(request: Request):
-    import tempfile
-
-    from _adk import stages
+async def _execute(run_id: str, doc_path: str) -> None:
+    from _adk import stages as S
     from ..llm import get_llm
     from ..store import Store
 
-    raw = await request.body()
-    if not raw:
-        return {"ok": False, "error": "empty body — send the document bytes"}
-
-    tmp = tempfile.NamedTemporaryFile(prefix="anz_api_", delete=False)
-    tmp.write(raw)
-    tmp.close()
-
+    rec = RUNS[run_id]
     llm = get_llm()
-    state: dict = {"input_path": tmp.name}
-    stage_log = []
-    for fn in (stages.ingest_stage, stages.inventory_stage, stages.scan_stage,
-               stages.classify_rules_stage, stages.decide_stage, stages.assemble_stage):
+    rec["llm_mode"] = "stub" if llm.is_stub else "groq"
+    state: dict = {"input_path": doc_path}
+    fns = [S.ingest_stage, S.inventory_stage, S.scan_stage,
+           S.classify_rules_stage, S.decide_stage, S.assemble_stage]
+
+    for name, fn in zip(STAGE_NAMES, fns):
+        rec["current_stage"] = name
         try:
             result = await fn(state, llm)
-        except Exception as exc:  # surface, never 500 silently
-            return {"ok": False, "error": f"{fn.__name__}: {exc!r}", "stages": stage_log}
-        stage_log.append({"stage": fn.__name__, "message": result.get("message", "")})
+        except Exception as exc:  # surface, never hang
+            rec.update(status="error", error=f"{name}: {exc!r}", current_stage=None)
+            return
+        rec["stages"].append({"stage": name,
+                              "message": result.get("message", ""),
+                              "ok": result.get("ok", True)})
         state.update(result.get("delta", {}))
         if not result.get("ok", True):
-            return {"ok": False, "error": result.get("message"), "stages": stage_log}
-    Path(tmp.name).unlink(missing_ok=True)
+            rec.update(status="error", error=result.get("message"), current_stage=None)
+            return
 
-    run_id = uuid.uuid4().hex[:12]
-    try:
-        Store().save_run(run_id, document_id=run_id, status="completed")
-    except Exception:  # persistence is best-effort; the response is the product
-        pass
-
-    return {
-        "ok": True,
-        "run_id": run_id,
-        "llm_mode": "stub" if llm.is_stub else "groq",
-        "stages": stage_log,
+    Path(doc_path).unlink(missing_ok=True)
+    rec["result"] = {
         "metrics": state.get("metrics", {}),
         "actors": state.get("actors", {}),
         "payload": state.get("payload", []),
         "review_queue": state.get("review_queue", []),
         "warnings": state.get("warnings", []),
     }
+    rec.update(status="completed", current_stage=None)
+    try:
+        Store().save_run(run_id, document_id=run_id, status="completed")
+    except Exception:  # persistence is best-effort; the response is the product
+        pass
+
+
+@app.post("/runs")
+async def create_run(request: Request, wait: int = 0):
+    raw = await request.body()
+    if not raw:
+        return {"ok": False, "error": "empty body — send the document bytes"}
+    tmp = tempfile.NamedTemporaryFile(prefix="anz_api_", delete=False)
+    tmp.write(raw)
+    tmp.close()
+
+    run_id = uuid.uuid4().hex[:12]
+    RUNS[run_id] = {"run_id": run_id, "status": "running",
+                    "current_stage": None, "stages": [], "result": None}
+    if wait:
+        await _execute(run_id, tmp.name)
+        return {"ok": RUNS[run_id]["status"] == "completed", **RUNS[run_id]}
+    asyncio.get_running_loop().create_task(_execute(run_id, tmp.name))
+    return {"ok": True, "run_id": run_id, "status": "running",
+            "stage_names": STAGE_NAMES}
+
+
+@app.get("/runs/{run_id}")
+def get_run(run_id: str):
+    rec = RUNS.get(run_id)
+    if rec is None:
+        return {"ok": False, "error": "unknown run_id"}
+    return {"ok": rec["status"] != "error", **rec}
 
 
 @app.post("/runs/{run_id}/interventions")
