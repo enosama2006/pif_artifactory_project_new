@@ -1,5 +1,13 @@
 """All tunables in one place; every knob env-overridable, never hard-coded at call sites."""
 import os
+from pathlib import Path
+
+# agent/.env (gitignored) is loaded automatically — GROQ_API_KEY lives there.
+try:
+    from dotenv import load_dotenv
+    load_dotenv(Path(__file__).resolve().parents[1] / ".env")
+except ImportError:
+    pass
 
 
 def _int_env(name: str, default: int) -> int:

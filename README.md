@@ -11,7 +11,7 @@ failure analysis, and design rationale live in [`docs/`](docs/).
 ## Layout — two fully independent components
 
 ```
-agent/    Python service: ingestion blocks → 9-stage pipeline → REST API
+agent/    Google ADK agent: ingestion blocks → deterministic pipeline chain → REST API
 addin/    Office.js Word Add-in: anchoring, upload, review UX
 ```
 
@@ -32,13 +32,17 @@ anchor, never by text search.
 
 ## Status
 
-Bootstrap. The pipeline mechanics are implemented and tested against
-adversarial LLM stubs (`agent/tests/`); real LLM wiring and the add-in UI are
-the next milestones (see `docs/DESIGN_repo_and_ux.md` §6 for build order).
+The agent runs end-to-end as a **Google ADK agent**: `adk web` (from the repo
+root) discovers `agent/` and drives the six-stage DeterministicChain; Groq is
+wired behind the provider boundary (`GROQ_API_KEY` in `agent/.env`, loaded
+automatically) with a no-key stub mode for wiring checks. The add-in UI and
+the golden corpus are the next milestones (`docs/DESIGN_repo_and_ux.md` §6).
 
 ## Development
 
 ```bash
-cd agent
-python3 -m pytest tests/ -v          # no external services needed
+cd agent && pip install -e ".[dev]"
+python3 -m pytest tests/ -v          # 12 tests, no network, no key needed
+python3 run_local.py sample.docx     # full pipeline from the CLI
+cd .. && adk web                     # ADK web UI — pick "agent"
 ```
