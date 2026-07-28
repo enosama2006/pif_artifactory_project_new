@@ -315,6 +315,61 @@ async function removeAnchors() {
   log("Anchors removed (content kept).");
 }
 
+/* ── diagnostics report — paste it to the developer/assistant to evaluate ── */
+
+async function copyDiagnostics() {
+  if (!RUN) { log("Run the pipeline first."); return; }
+  let full = null;
+  try {
+    full = await (await fetch(`${SERVER}/runs/${RUN.run_id}`, { cache: "no-store" })).json();
+  } catch { /* fall back to what the pane already holds */ }
+  const r = (full && full.result) || RUN;
+
+  const report = {
+    diagnostics_version: 1,
+    generated_at: new Date().toISOString(),
+    run_id: RUN.run_id,
+    llm_mode: RUN.llm_mode,
+    stages: (full && full.stages) || [],
+    metrics: r.metrics || {},
+    original_leaves: (r.leaves || []).map(l => ({
+      id: l.leaf_id, kind: l.kind, section: l.section,
+      row: l.row, anchor: l.anchor, text: l.text,
+    })),
+    actors: r.actors || {},
+    surface_links: (r.links || []).map(l => ({
+      leaf: l.leaf_id, actor: l.actor_id, surface: l.surface,
+    })),
+    classifications: r.classifications || [],
+    cascade: r.cascade || [],
+    decisions: r.decisions || [],
+    payload: (r.payload || []).map(p => ({
+      leaf: p.leaf_id, anchor: p.anchor, before: p.before, after: p.after,
+    })),
+    review_queue: r.review_queue || [],
+    warnings: r.warnings || [],
+  };
+  const text = "=== ANONYMIZER DIAGNOSTICS ===\n" + JSON.stringify(report, null, 1);
+
+  try {
+    await navigator.clipboard.writeText(text);
+    log(`Diagnostics copied to clipboard (${(text.length / 1024).toFixed(0)} KB) — paste it to the assistant.`);
+  } catch {
+    // clipboard API blocked in this webview → show a selectable box
+    const box = $("diagBox");
+    box.style.display = "block";
+    box.value = text;
+    box.focus();
+    box.select();
+    try {
+      document.execCommand("copy");
+      log("Diagnostics copied (fallback). The box below holds the full report.");
+    } catch {
+      log("Clipboard blocked — select the box below manually (Ctrl+A, Ctrl+C).");
+    }
+  }
+}
+
 /* ── util ─────────────────────────────────────────────────────────────────── */
 
 function intervene(type, target, payload) {

@@ -89,6 +89,13 @@ async def _execute(run_id: str, doc_path: str) -> None:
         "payload": state.get("payload", []),
         "review_queue": state.get("review_queue", []),
         "warnings": state.get("warnings", []),
+        # diagnostics: original text per leaf + scan links + raw batch
+        # decisions, so a run can be evaluated end-to-end from one response
+        "leaves": state.get("leaves", []),
+        "links": state.get("links", []),
+        "decisions": state.get("decisions", []),
+        "classifications": state.get("classifications", []),
+        "cascade": state.get("cascade", []),
     }
     rec.update(status="completed", current_stage=None)
     try:

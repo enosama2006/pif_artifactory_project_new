@@ -129,7 +129,10 @@
       <div class="toolbar">
         <button class="ghost" onclick="applyAll()">✓ Apply all (tracked changes)</button>
         <button class="ghost" onclick="removeAnchors()">Clean anchors</button>
+        <button class="ghost" onclick="copyDiagnostics()">📋 Copy diagnostics</button>
       </div>
+      <textarea id="diagBox" style="display:none; width:100%; height:120px; font:11px Consolas,monospace;
+        border:1px solid var(--line); border-radius:8px; margin-top:6px;" readonly></textarea>
       <div id="changes"></div>
     </section>
 
