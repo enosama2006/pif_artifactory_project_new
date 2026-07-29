@@ -11,7 +11,27 @@ Ordered by owner priority. Every item lands with a regression test.
    messages; false "invented placeholder" REVIEWs gone (~3 legit REVIEWs
    expected: SDAIA directives — SDAIA was never in the inventory; check
    whether the portrait fixes that).
-2. **Abbreviation/definition tables (DEFERRED by owner, needs a decision).**
+2. **Comment box + Redo (owner idea, 2026-07-29 — agreed design).**
+   One unified comment box in the pane; a comment is either FREE (general
+   guidance) or BOUND to a dictionary actor / proposed change. One "Redo"
+   button processes accumulated comments:
+   - BOUND path (build FIRST): a Groq ARBITER call with a CLOSED output —
+     one of the existing intervention operations (rename_placeholder,
+     merge_actors, add_surface, correct_role, ignore_actor, edit_leaf) —
+     applied to the DB, then a PARTIAL re-run: deterministic re-scan +
+     decide only for leaves touching the edited actors. Invalid arbiter
+     output → shown for review, never executed (invented-placeholder
+     philosophy). Builds on: stored interventions, the closed intervention
+     enum in routes.py, and the partial-re-run backlog item below.
+   - FREE path (second layer): a refine call turns comments into a USER
+     GUIDANCE section injected into portrait/inventory/decide prompts
+     (same pattern as the portrait), with the previous run's dictionary
+     passed as a BINDING SEED so consistency survives the full re-run.
+   - Every comment is stored as a `comment` intervention → per-organisation
+     guidance memory reusable in future documents.
+   - POST /runs body becomes JSON {ooxml, comments, seed_dictionary}
+     (back-compat: raw OOXML body still accepted).
+3. **Abbreviation/definition tables (DEFERRED by owner, needs a decision).**
    Rows like `PIF | Public Investment Fund` map BOTH cells to one actor →
    `<owner> | <owner>` (meaningless duplication). Options discussed:
    (a) deterministic rule: same actor in both cells of a Terms/Definition
@@ -19,10 +39,10 @@ Ordered by owner priority. Every item lands with a regression test.
    (b) tell the decide LLM it is an abbreviation-expansion row and let it
    emit one merged rewrite; (c) leave to REVIEW. Assistant's lean: (a) —
    deterministic, no prompt reliance. Owner said: postpone, focus elsewhere.
-3. **Org dictionary reuse** — seed inventory from previously confirmed
+4. **Org dictionary reuse** — seed inventory from previously confirmed
    actors of the same organisation (SQLite `actors` table already persists;
    wire a `document_id → org` grouping + seed payload).
-4. **Golden corpus** — `agent/tests/golden/` still empty; the calibration
+5. **Golden corpus** — `agent/tests/golden/` still empty; the calibration
    doc + expected actors list should become the first entry so run-quality
    is CI-measurable instead of chat-reviewed.
 
