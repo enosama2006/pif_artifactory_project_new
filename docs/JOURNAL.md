@@ -67,3 +67,14 @@ Next diagnostics paste → compare against Run 4: placeholder quality
 (`<IT_department>`-style expected), false shared-anchor REVIEWs should vanish
 after Clean anchors + rerun, table rows should apply as blocks. Then work
 `docs/BACKLOG.md` top-down.
+
+## Post-run-4 UX fix (2026-07-29)
+Owner report: Locate stopped finding the cover-page "Chief of Staff" title
+(a built-in Word control box) after the Clean-anchors + re-anchor cycle.
+**Cause:** Locate was anchor-tag-only; Clean anchors removed the old cover
+tag, and on re-anchoring Word refuses to wrap paragraphs inside built-in
+cover/title controls — those leaves end up with no anchor at all.
+**Fix (ui v0.6.1):** Locate/goTo now try the anchor first and fall back to a
+plain Word text search on the mention's surface (with occurrence cycling) —
+safe because Locate only selects, never replaces. Floating text boxes
+(shapes) remain unreachable by both methods; noted in BACKLOG.

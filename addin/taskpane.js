@@ -13,7 +13,7 @@
  */
 /* global Office, Word, fetch, document */
 
-const UI_VERSION = "0.6.0";        // bump when the pane changes — shown in the header
+const UI_VERSION = "0.6.1";        // bump when the pane changes — shown in the header
 let RUN = null;                    // completed run result
 let SERVER = "http://localhost:8080";
 const STAGE_LABELS = {
@@ -224,7 +224,7 @@ async function runPipeline() {
 /* Map every span to its actor (by the ORIGINAL placeholder) so renames and
  * ignores recompute `after` from spans, never by string surgery on text.
  * Also build actor → mention anchors for the Locate button. */
-let MENTIONS = {};       // actor_id -> [anchors], document order
+let MENTIONS = {};       // actor_id -> [{anchor, surface}], document order
 let LOCATE_IDX = {};     // actor_id -> cycling cursor
 
 function indexSpans() {
@@ -237,21 +237,45 @@ function indexSpans() {
   const anchorByLeaf = {};
   (RUN.leaves || []).forEach(l => { anchorByLeaf[l.leaf_id] = l.anchor; });
   (RUN.links || []).forEach(l => {
-    const a = anchorByLeaf[l.leaf_id];
-    if (!a) return;
     MENTIONS[l.actor_id] = MENTIONS[l.actor_id] || [];
-    if (!MENTIONS[l.actor_id].includes(a)) MENTIONS[l.actor_id].push(a);
+    MENTIONS[l.actor_id].push({ anchor: anchorByLeaf[l.leaf_id] || null,
+                                surface: l.surface });
   });
+}
+
+/* Robust select: anchor tag first; if the control is gone or Word refused to
+ * wrap that paragraph (built-in cover/title boxes), fall back to a plain
+ * text search — safe here because Locate only SELECTS, never replaces. */
+async function selectByAnchorOrText(anchor, text, nth = 0) {
+  if (anchor) {
+    try { await withCc(anchor, async (_c, cc) => cc.select()); return "anchor"; }
+    catch { /* fall through to text search */ }
+  }
+  if (!text) throw new Error("nothing to locate");
+  let how = "";
+  await Word.run(async (ctx) => {
+    const found = ctx.document.body.search(text.slice(0, 120), { matchCase: true });
+    found.load("items");
+    await ctx.sync();
+    if (!found.items.length) throw new Error("not found by anchor or text (floating text box?)");
+    found.items[Math.min(nth, found.items.length - 1)].select();
+    how = "text search";
+    await ctx.sync();
+  });
+  return how;
 }
 
 async function locateActor(actorId) {
   const list = MENTIONS[actorId] || [];
   if (!list.length) { log("No located mentions for this actor."); return; }
   const i = (LOCATE_IDX[actorId] = ((LOCATE_IDX[actorId] ?? -1) + 1) % list.length);
+  const m = list[i];
   try {
-    await withCc(list[i], async (_c, cc) => cc.select());
-    log(`Located ${RUN.actors[actorId].name}: mention ${i + 1}/${list.length}`);
-  } catch (e) { log("ERROR: " + fmtErr(e)); }
+    // nth: how many earlier mentions share this surface → pick the right hit
+    const nth = list.slice(0, i).filter(x => x.surface === m.surface).length;
+    const how = await selectByAnchorOrText(m.anchor, m.surface, nth);
+    log(`Located ${RUN.actors[actorId].name}: mention ${i + 1}/${list.length} (${how}).`);
+  } catch (e) { log("ERROR locating: " + fmtErr(e)); }
 }
 
 function recomputeAfter(p) {
@@ -412,9 +436,8 @@ async function applyAll() {
 
 async function goTo(i) {
   const p = RUN.payload[i];
-  if (!p.anchor) return;
-  try { await withCc(p.anchor, async (_c, cc) => cc.select()); }
-  catch (e) { log("ERROR: " + e.message); }
+  try { await selectByAnchorOrText(p.anchor, p.before); }
+  catch (e) { log("ERROR locating: " + fmtErr(e)); }
 }
 
 function reject(i) {

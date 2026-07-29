@@ -29,6 +29,8 @@ Ordered by owner priority. Every item lands with a regression test.
   acceptable as warnings; revisit lexicon if they annoy.
 - Page-header/footer leaves have no anchors (Office.js limitation) — manual
   apply; possible fix via header-specific OOXML rewrite export.
+- Floating text boxes (Word shapes) are invisible to both getByTag and
+  body.search; reaching them needs the WordApi 1.7+ shapes API.
 - Decide reasons are terse; if REVIEW quality matters more later, ask for a
   one-line justification only on REVIEW.
 
