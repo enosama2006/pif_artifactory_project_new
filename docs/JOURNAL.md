@@ -310,11 +310,35 @@ user's comment, the current rewrite, the allowed vocabulary (dictionary
 text, validated + leak-gated, applied as an override. Every failure is
 a visible report entry (invented tag, identical text, leak).
 
+## HITL run 3 — `f6465516624b` (2026-07-29)
+The sweep fix PROVED itself: the Reference cell rewrote to "under
+Cabinet Resolution <reference_number> dating <date>" with no comment
+needed. Three new observations. (1) "HITL works on texts, not table
+rows": the comment "you missed the document" was bound to one cell, but
+the arbiter only saw that cell — it hallucinated instead of targeting
+the sibling Document cell. (2) The arbiter's add_surface used «CoS
+division head» — the COMMENT's wording — while the document says
+"CoS DH": zero mentions linked, no explanation. (3) Owner's explicit
+demand: a log showing what was sent to the agent, what it returned,
+and what ran inside.
+**Fixed:** (1) `target_context` now ships `row_cells` — every cell of
+the bound leaf's row (id/column/text/current rewrite) — and the arbiter
+may target ANY row cell id; the reviser sees the row too (a row is ONE
+record, iron rule 3). (2) add_surface with zero links now warns
+visibly: the surface must be the document's verbatim spelling, and the
+prompt teaches the "CoS DH" lesson. (3) THE TRACE: every report entry
+carries `trace.arbiter/{sent,returned}` and `trace.reviser/…`; the
+decide exchange lands in `redo_trace.decide`; the add-in renders a
+collapsible "agent trace" per card and diagnostics carries it all — the
+owner pastes diagnostics and the whole agent conversation is in it.
+
 ## How to continue
-Next calibration run exercises the fixed loop end-to-end on the
-Reference cell itself: the initial run should now mask "(292)" and
-"27/04/1441H" via cascade with no comment needed; any rewrite_leaf
-comment should visibly change its card (↻) or say exactly why not.
-Phase 2 (free comments → guidance-seeded full re-run) and org-memory
-seeding (BACKLOG 4) come after. Every change-set is mapped in
-`docs/CHANGES.md` for rollback.
+Next calibration run exercises table-row comments end-to-end: bind a
+comment to any cell of a row, expect the arbiter to pick the right
+sibling (the trace on the report card shows its reasoning inputs), and
+expect a wrong-surface add_surface to say so instead of silently
+linking nothing. When the owner pastes diagnostics, read
+`redo_report[].trace` and `redo_trace.decide` FIRST — they are the
+ground truth of the agent conversation. Phase 2 (free comments →
+guidance-seeded full re-run) and org-memory seeding (BACKLOG 4) come
+after. Every change-set is mapped in `docs/CHANGES.md` for rollback.

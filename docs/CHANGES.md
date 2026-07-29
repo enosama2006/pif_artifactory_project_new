@@ -11,6 +11,57 @@ Each change-set maps to ONE commit; find its hash with
 
 ---
 
+## Change-set: HITL run-3 — agent-exchange trace, table-row comments, honest zero-link (2026-07-29)
+
+Trigger: run `f6465516624b`. Three owner observations: (1) "HITL works on
+texts, not table rows" — a comment bound to one cell cannot reach its
+sibling cells; (2) the arbiter linked ZERO mentions because it invented
+the surface «CoS division head» while the document says "CoS DH", and
+nothing explained why; (3) the explicit demand: "build a log that lets
+you see what was sent to the agent, what it returned, and what happened
+inside".
+
+### agent/app/pipeline/redo/engine.py
+- **What:** (1) TRACE LOG — every report entry now carries
+  `trace.arbiter = {sent, returned}` (the full arbiter payload and the
+  raw LLM reply) and, for rewrite_leaf, `trace.reviser = {sent,
+  returned}`; the decide mini-batch exchange lands run-level in
+  `redo_trace.decide`. Both ride the existing result dict → diagnostics
+  shows the whole conversation. (2) ROW CONTEXT — `target_context` ships
+  `row_cells` (id/column/text/current_rewrite of every cell in the bound
+  leaf's row) to the arbiter, and the reviser payload gets the same
+  (column/text). (3) ZERO-LINK WARNING — an add_surface whose
+  `mentions_linked` ≤ 0 now gets a warning naming the surface and saying
+  it must be the document's verbatim spelling.
+- **Why:** owner demands visibility into the agent conversation; a table
+  ROW is one record (iron rule 3) so a cell comment must be able to
+  reach siblings; silent zero-link redos looked like no-ops.
+- **Rollback:** each piece is independent — drop the `trace`/`redo_trace`
+  keys, the `row_cells` blocks, or the ≤0 warning respectively; nothing
+  else consumes them.
+
+### agent/app/pipeline/arbiter/prompt.py + redo/prompt.py
+- **What:** arbiter guide gains (a) the verbatim-surface rule with the
+  real "CoS DH" failure as the example, (b) the row_cells rule — any
+  row cell id is a legitimate rewrite/edit target and surfaces may come
+  from any cell's text. The reviser prompt gets a ROW CELLS section so
+  it understands what the cell represents inside its record.
+- **Rollback:** delete the two guide bullets / the ROW CELLS section.
+
+### addin/taskpane.js (UI 0.8.3)
+- **What:** each redo-report card gets a collapsible "🔍 agent trace"
+  block (the sent/returned JSON); diagnostics adds `redo_trace` and
+  notes that `redo_report[].trace` carries the per-comment exchanges.
+- **Rollback:** remove the `trace` details block and the `redo_trace`
+  diagnostics line.
+
+### Tests
+- 4 new: trace on report entries (arbiter + reviser), decide exchange in
+  redo_trace, whole-row context + sibling-cell targeting, zero-link
+  verbatim warning (87 total, green).
+
+---
+
 ## Change-set: HITL run-2b — Reference-cell patterns + the dedicated reviser (2026-07-29)
 
 Trigger: owner clarified the run-2 comment: the target was the whole

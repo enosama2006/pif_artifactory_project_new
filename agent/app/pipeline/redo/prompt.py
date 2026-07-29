@@ -41,6 +41,10 @@ CURRENT REWRITE (what the pipeline produced — the comment says it is wrong):
 LINKED MENTIONS (already replaced by these placeholders):
 {json.dumps(payload.get("mentions", []), ensure_ascii=False)}
 
+ROW CELLS (this block is one cell of a table row — the row is ONE record;
+use the siblings to understand what this cell represents):
+{json.dumps(payload.get("row_cells", []), ensure_ascii=False)}
+
 ALLOWED PLACEHOLDERS:
 {json.dumps(payload.get("allowed_placeholders", []), ensure_ascii=False)}
 

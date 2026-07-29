@@ -13,7 +13,7 @@
  */
 /* global Office, Word, fetch, document */
 
-const UI_VERSION = "0.8.2";        // bump when the pane changes — shown in the header
+const UI_VERSION = "0.8.3";        // bump when the pane changes — shown in the header
 let RUN = null;                    // completed run result
 let COMMENTS = [];                 // pending HITL comments (mirror of the server)
 let PENDING_BIND = null;           // {bind:{...}, label} set by the 💬 buttons
@@ -937,9 +937,15 @@ function renderRedoReport(report, updatedCount) {
         : `${e.op}${e.applied ? " — " + e.applied : ""}` +
           (e.mentions_linked != null ? ` — ${e.mentions_linked} new mention(s) linked` : "") +
           (e.warning ? " — " + e.warning : "");
+      /* the agent-exchange log: what was sent, what came back, what ran —
+       * collapsible so the card stays readable (owner ask, HITL run 3) */
+      const trace = e.trace ? `<details style="margin-top:4px">` +
+        `<summary class="muted" style="cursor:pointer">🔍 agent trace (sent / returned)</summary>` +
+        `<pre style="white-space:pre-wrap;max-height:220px;overflow:auto;font-size:10px">` +
+        esc(JSON.stringify(e.trace, null, 1)) + `</pre></details>` : "";
       return `<div class="card" style="border-inline-start:3px solid ${color}">` +
         `<div>${head} “${esc((e.text || "").slice(0, 80))}”</div>` +
-        `<div class="muted">${esc(what)}</div></div>`;
+        `<div class="muted">${esc(what)}</div>${trace}</div>`;
     }).join("");
   if (updatedCount === 0) el.scrollIntoView({ behavior: "smooth", block: "nearest" });
 }
@@ -1033,7 +1039,8 @@ async function copyDiagnostics() {
     warnings: r.warnings || [],
     pending_comments: COMMENTS,
     processed_comments: (full && full.processed_comments) || [],
-    redo_report: r.redo_report || [],
+    redo_report: r.redo_report || [],       // each entry carries .trace (sent/returned)
+    redo_trace: r.redo_trace || {},         // run-level exchanges (decide mini-batch)
     updated_leaf_ids: r.updated_leaf_ids || [],
   };
   const text = "=== ANONYMIZER DIAGNOSTICS ===\n" + JSON.stringify(report, null, 1);

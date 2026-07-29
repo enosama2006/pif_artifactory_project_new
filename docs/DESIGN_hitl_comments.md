@@ -101,6 +101,23 @@ but the report says the leaf could not be pinned.
   the initial run, so the original path is untouched.
 - Reconcile + `validate_and_assemble` run with the full gate set;
   decisions for unaffected leaves are carried over verbatim.
+- **Trace log (HITL run 3, owner requirement):** every exchange with the
+  LLM during a redo is recorded verbatim — per comment,
+  `redo_report[].trace.arbiter/{sent,returned}` and (for rewrite_leaf)
+  `.trace.reviser/{sent,returned}`; the decide mini-batch lands in the
+  result-level `redo_trace.decide`. "sent" is the structured payload the
+  prompt was built from; "returned" is the raw model reply. The add-in
+  renders it as a collapsible "agent trace" per report card, and
+  diagnostics carries it all — one paste shows what was sent, what came
+  back, and what ran inside.
+- **Table rows (iron rule 3):** when the bound leaf is a table cell, the
+  arbiter's target context includes `row_cells` — every cell of the row
+  (id, column, text, current rewrite) — and the prompt licenses ops
+  against ANY of those ids, because the comment usually concerns a
+  sibling cell ("you missed the document" → the Document cell). The
+  reviser payload gets the same row so it knows what the cell
+  represents. An add_surface that links zero mentions warns visibly
+  that surfaces must be the document's verbatim spelling.
 
 ## API (routes.py, version 0.5.0)
 

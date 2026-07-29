@@ -194,8 +194,9 @@ async def redo_run(result: dict, comments: list[dict], llm,
             # actor_id/placeholder let a "wrong anonymising" complaint route
             # to rename_placeholder (HITL run 2).
             ph_of = {a.actor_id: a.placeholder for a in actors.values()}
+            lf0 = leaf_by_id[lid]
             out["leaf"] = {
-                "id": lid, "text": leaf_by_id[lid].text,
+                "id": lid, "text": lf0.text,
                 "linked_mentions": sorted(
                     ({"surface": l["surface"], "actor_id": l["actor_id"],
                       "placeholder": ph_of.get(l["actor_id"])}
@@ -203,6 +204,15 @@ async def redo_run(result: dict, comments: list[dict], llm,
                     key=lambda m: m["surface"])}
             if lid in old_payload_by_leaf:
                 out["current_rewrite"] = old_payload_by_leaf[lid].get("after")
+            # A table ROW is one record (iron rule 3) — a comment bound to
+            # one cell usually concerns a sibling ("you missed the document"
+            # meant the Document cell, HITL run 3): ship the whole row.
+            if lf0.row:
+                out["row_cells"] = [
+                    {"id": l.leaf_id, "column": l.col, "text": l.text,
+                     "current_rewrite":
+                         (old_payload_by_leaf.get(l.leaf_id) or {}).get("after")}
+                    for l in leaves if l.row == lf0.row]
         return out
 
     async def arbitrate(c):
@@ -210,13 +220,14 @@ async def redo_run(result: dict, comments: list[dict], llm,
                    "resolved": c.get("resolved", {}), "dictionary": dictionary,
                    "target": target_context(c), "portrait": portrait}
         try:
-            return await asyncio.to_thread(
+            raw = await asyncio.to_thread(
                 llm.json_call, build_arbiter_prompt(payload), payload=payload)
         except Exception as exc:
-            return {"_error": f"arbiter call failed: {exc!r}"}
+            raw = {"_error": f"arbiter call failed: {exc!r}"}
+        return payload, raw
 
     progress(f"redo: arbitrating {len(comments)} comment(s)")
-    raw_ops = await asyncio.gather(*(arbitrate(c) for c in comments))
+    exchanges = await asyncio.gather(*(arbitrate(c) for c in comments))
 
     # 2. validate + apply — invalid output is REPORTED, never executed
     report: list[dict] = []
@@ -224,9 +235,13 @@ async def redo_run(result: dict, comments: list[dict], llm,
     guidance: dict[str, str] = {}          # leaf_id → binding user comment
     forced_redecide: set[str] = set()      # rewrite_leaf targets → the reviser
     revise_entries: dict[str, dict] = {}   # leaf_id → its report entry
-    for c, raw in zip(comments, raw_ops):
+    for c, (sent, raw) in zip(comments, exchanges):
+        # trace = the full exchange log: exactly what was sent to the agent
+        # and what it returned, kept on the report entry so the diagnostics
+        # dump shows the whole conversation (owner requirement, HITL run 3)
         entry = {"comment_id": c.get("id"), "text": c["text"],
-                 "resolved": c.get("resolved", {})}
+                 "resolved": c.get("resolved", {}),
+                 "trace": {"arbiter": {"sent": sent, "returned": raw}}}
         if isinstance(raw, dict) and "_error" in raw:
             entry["error"] = raw["_error"]
             report.append(entry)
@@ -291,6 +306,7 @@ async def redo_run(result: dict, comments: list[dict], llm,
     allowed = (set(ph.values()) | {c.placeholder for c in cascade}
                | _STD_PLACEHOLDERS)
     new_decisions: list[Decision] = []
+    redo_trace: dict = {}          # run-level exchanges (decide mini-batch)
     if affected:
         cascade_dicts = [asdict(h) for h in cascade]
         batch_ids = sorted(affected)
@@ -316,8 +332,11 @@ async def redo_run(result: dict, comments: list[dict], llm,
             data = await asyncio.to_thread(
                 llm.json_call, build_decide_prompt(payload), payload=payload)
             response = data.get("decisions", {}) if isinstance(data, dict) else {}
+            redo_trace["decide"] = {"sent": payload, "returned": data}
         except Exception as exc:
             response = {}
+            redo_trace["decide"] = {"sent": payload,
+                                    "returned": {"_error": f"{exc!r}"}}
             progress(f"redo: decide call failed ({exc!r}) — affected leaves go to REVIEW")
         new_decisions = reconcile_batch(batch_ids, response, allowed)
 
@@ -386,18 +405,24 @@ async def redo_run(result: dict, comments: list[dict], llm,
                                 for x in links_by_leaf.get(lid, [])],
                    "allowed_placeholders": sorted(allowed),
                    "comment": guidance.get(lid, ""), "portrait": portrait}
+        if lf.row:
+            payload["row_cells"] = [
+                {"column": x.col, "text": x.text}
+                for x in leaves if x.row == lf.row]
         try:
             data = await asyncio.to_thread(
                 llm.json_call, build_revise_prompt(payload), payload=payload)
-            return lid, current, data
         except Exception as exc:
-            return lid, current, {"_error": f"reviser call failed: {exc!r}"}
+            data = {"_error": f"reviser call failed: {exc!r}"}
+        return lid, current, payload, data
 
     if forced_redecide:
         progress(f"redo: revising {len(forced_redecide)} leaf/leaves per comment")
-    for lid, current, data in await asyncio.gather(
+    for lid, current, sent, data in await asyncio.gather(
             *(revise(t) for t in sorted(forced_redecide))):
         entry = revise_entries.get(lid, {})
+        entry.setdefault("trace", {})["reviser"] = {"sent": sent,
+                                                    "returned": data}
         rw = data.get("rewrite") if isinstance(data, dict) else None
         if isinstance(data, dict) and "_error" in data:
             entry["error"] = data["_error"]
@@ -465,6 +490,16 @@ async def redo_run(result: dict, comments: list[dict], llm,
             if aid:
                 entry["mentions_linked"] = (new_per_actor.get(aid, 0)
                                             - old_per_actor.get(aid, 0))
+                # HITL run 3: the arbiter added «CoS division head» while the
+                # document says "CoS DH" — zero links looked like a silent
+                # no-op. Say WHY: the surface must be the document's spelling.
+                if entry["mentions_linked"] <= 0 and "warning" not in entry:
+                    entry["warning"] = (
+                        f"surface «{f.get('surface', '')}» matched nothing in "
+                        f"the document — a surface only links when it is the "
+                        f"document's own spelling, copied verbatim (check the "
+                        f"trace: the agent may have paraphrased your comment "
+                        f"instead of quoting the text)")
 
     return {"actors": {k: asdict(a) for k, a in actors.items()},
             "links": [asdict(l) for l in links],
@@ -472,4 +507,5 @@ async def redo_run(result: dict, comments: list[dict], llm,
             "decisions": [asdict(d) for d in decisions.values()],
             "payload": res.payload, "review_queue": res.review_queue,
             "warnings": res.warnings, "metrics": res.metrics,
-            "redo_report": report, "updated_leaf_ids": sorted(updated)}
+            "redo_report": report, "updated_leaf_ids": sorted(updated),
+            "redo_trace": redo_trace}

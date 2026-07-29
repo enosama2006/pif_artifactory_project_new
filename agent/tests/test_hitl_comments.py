@@ -412,6 +412,122 @@ def test_arbiter_sees_actor_and_placeholder_of_linked_mentions():
     assert any("<oversight_body>" in p["after"] for p in delta["payload"])
 
 
+# ── HITL run 3: the exchange log, whole-row context, honest zero-link ───────
+# Owner: "build a log that lets you see what was sent to the agent, what it
+# returned, and what happened inside" — the trace IS that log, and it must
+# survive into redo_report / redo_trace so diagnostics carries it.
+
+def test_redo_report_carries_the_full_agent_trace():
+    actors = {"ACT_001": BOARD}
+    result = build_result(LEAVES, actors)
+    raw_op = {"op": "rewrite_leaf", "leaf_id": "L_000003",
+              "guidance": "abstract the whole cell", "reason": "user asked"}
+    fixed = "Approved by <governing_board> on <date>."
+    llm = ScriptedLlm(arbiter=[raw_op],
+                      revise={"rewrite": fixed, "reason": "abstracted"})
+    comments = [{"id": "c1", "text": "abstract this cell",
+                 "bind": {"leaf_id": "L_000003"},
+                 "resolved": {"leaf_id": "L_000003", "how": "explicit"}}]
+    delta = asyncio.run(redo_run(result, comments, llm))
+    tr = delta["redo_report"][0]["trace"]
+    # what was SENT to the arbiter…
+    assert tr["arbiter"]["sent"]["text"] == "abstract this cell"
+    assert tr["arbiter"]["sent"]["target"]["leaf"]["id"] == "L_000003"
+    # …what it RETURNED…
+    assert tr["arbiter"]["returned"] == raw_op
+    # …and the reviser exchange that ran inside
+    assert tr["reviser"]["sent"]["comment"] == "abstract the whole cell"
+    assert tr["reviser"]["returned"]["rewrite"] == fixed
+
+
+def test_decide_exchange_lands_in_redo_trace():
+    actors = {"ACT_001": BOARD}
+    result = build_result(LEAVES, actors)
+    llm = ScriptedLlm(arbiter=[{
+        "op": "add_surface", "surface": "Strategy Office",
+        "new_actor": {"name": "Strategy Office", "kind": "ORG_UNIT",
+                      "role": "strategy office"},
+        "reason": "missed unit"}])
+    comments = [{"id": "c1", "text": "missed unit",
+                 "bind": {"anchor": "anz:C_00001"},
+                 "resolved": {"leaf_id": "L_000001", "how": "anchor"}}]
+    delta = asyncio.run(redo_run(result, comments, llm))
+    dec = delta["redo_trace"]["decide"]
+    assert dec["sent"]["task"] == "decide"
+    assert {l["id"] for l in dec["sent"]["leaves"]} == {"L_000001", "L_000002"}
+    assert set(dec["returned"]["decisions"]) == {"L_000001", "L_000002"}
+
+
+def test_table_cell_comment_ships_the_whole_row_and_can_target_a_sibling():
+    # Run f6465516624b: HITL "works on texts but not table rows" — a comment
+    # bound to one cell must let the arbiter see and target its siblings,
+    # because the ROW is one record (iron rule 3).
+    actors = {"ACT_001": BOARD}
+    row = [Leaf("L_000021", "table_cell", "MC", "s2",
+                row="t2r4", col="Code"),
+           Leaf("L_000022", "table_cell", "Management Committee Charter", "s2",
+                row="t2r4", col="Document"),
+           Leaf("L_000023", "table_cell", "Kept by the Board.", "s2",
+                row="t2r4", col="Notes")]
+    leaves = LEAVES + row
+    result = build_result(leaves, actors)
+    seen_arbiter, seen_revise = {}, {}
+
+    def revise(payload):
+        seen_revise.update(payload)
+        return {"rewrite": "Charter of the governance committee <redacted>",
+                "reason": "abstracted per row context"}
+
+    class SpyLlm(ScriptedLlm):
+        def json_call(self, prompt, *, payload=None, **kw):
+            if (payload or {}).get("task") == "arbiter":
+                seen_arbiter.update(payload.get("target", {}))
+            return super().json_call(prompt, payload=payload, **kw)
+
+    # the comment is bound to the Code cell; the arbiter targets the SIBLING
+    # Document cell — allowed because row_cells exposes its id
+    llm = SpyLlm(arbiter=[{
+        "op": "rewrite_leaf", "leaf_id": "L_000022",
+        "guidance": "abstract the document title", "reason": "sibling cell"}],
+        revise=revise)
+    comments = [{"id": "c1", "text": "you missed the document in this row",
+                 "bind": {"leaf_id": "L_000021"},
+                 "resolved": {"leaf_id": "L_000021", "how": "explicit"}}]
+    delta = asyncio.run(redo_run(result, comments, llm))
+    cells = seen_arbiter["row_cells"]
+    assert [c["id"] for c in cells] == ["L_000021", "L_000022", "L_000023"]
+    assert {c["column"] for c in cells} == {"Code", "Document", "Notes"}
+    # the reviser also saw the row it is revising inside
+    assert {c["column"] for c in seen_revise["row_cells"]} \
+           == {"Code", "Document", "Notes"}
+    item = next(p for p in delta["payload"] if p["leaf_id"] == "L_000022")
+    assert item["after"] == "Charter of the governance committee <redacted>"
+    assert "L_000022" in delta["updated_leaf_ids"]
+
+
+def test_unmatched_surface_gets_zero_links_and_a_verbatim_warning():
+    # Run f6465516624b: the arbiter invented «CoS division head» while the
+    # document says "CoS DH" — zero mentions linked with no explanation.
+    actors = {"ACT_001": BOARD}
+    leaves = LEAVES + [Leaf("L_000030", "paragraph",
+                            "The CoS DH signs the register quarterly.", "s1",
+                            anchor="anz:C_00030")]
+    result = build_result(leaves, actors)
+    llm = ScriptedLlm(arbiter=[{
+        "op": "add_surface", "surface": "CoS division head",
+        "new_actor": {"name": "Chief of Staff division head",
+                      "kind": "PERSON", "role": "division head"},
+        "reason": "user says CoS is the chief of staff"}])
+    comments = [{"id": "c1", "text": "CoS division head must be anonymised",
+                 "bind": {"leaf_id": "L_000030"},
+                 "resolved": {"leaf_id": "L_000030", "how": "explicit"}}]
+    delta = asyncio.run(redo_run(result, comments, llm))
+    entry = delta["redo_report"][0]
+    assert entry["mentions_linked"] == 0
+    assert "verbatim" in entry["warning"]
+    assert "CoS division head" in entry["warning"]
+
+
 # ── API round-trip: comments accumulate, redo consumes them ─────────────────
 
 def test_comments_api_roundtrip(monkeypatch):

@@ -38,6 +38,18 @@ Decision guide (READ FIRST — real failures happened here):
   (e.g. "CoS DH" — never the whole sentence), "actor_id" = the existing
   actor it belongs to (match against the DICTIONARY variants; use
   new_actor only when nothing matches).
+- "surface" MUST be copied CHARACTER-FOR-CHARACTER from the document text
+  shown in TARGET CONTEXT — never from the comment's wording. Real failure:
+  the comment said "CoS division head" but the document says "CoS DH"; only
+  "CoS DH" links anything. A surface that is not a verbatim substring of
+  the document links ZERO mentions and the operation is wasted.
+- TARGET CONTEXT may contain "row_cells": the bound leaf is ONE CELL of a
+  table row, and per the pipeline's rules the whole ROW is a single record.
+  The comment may actually concern a SIBLING cell ("you missed the
+  document" → the Document cell, not the bound one). You may use ANY "id"
+  from row_cells as the leaf_id of edit_leaf/rewrite_leaf, and take
+  add_surface surfaces from any cell's "text". Pick the cell whose content
+  the comment is about.
 - rewrite_leaf triggers a dedicated revision of the leaf's full text per
   the comment. Use it for wording problems (a duplicated phrase, grammar,
   restructuring) AND for insufficient abstraction of non-name content —
