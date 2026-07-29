@@ -11,6 +11,9 @@ Arabic, but ALL code, UI and docs are English.
 **Read before touching anything:**
 - `docs/JOURNAL.md` — calibration-run history: every real-document run, what
   it exposed, what was fixed. THE file to reconstruct context.
+- `docs/CHANGES.md` — change ledger (owner rule): every change-set says
+  where it edited, why, and how to roll back just that piece. Append to it
+  with every commit.
 - `docs/BACKLOG.md` — agreed next steps + deliberately deferred questions.
 - `docs/DESIGN_pipeline.md`, `docs/DESIGN_repo_and_ux.md` — architecture.
 - `RUNBOOK.md` — how the owner runs everything (Windows .bat launchers).
@@ -26,8 +29,12 @@ Arabic, but ALL code, UI and docs are English.
    one unit in the add-in.
 4. Placeholders come from the actor's generic FUNCTION, never echo the name;
    the dictionary is LOCKED before any rewriting.
-5. Word apply is by content-control anchor (`anz:C_NNNNN`), never text
-   search; anchor numbering continues from the max existing tag.
+5. Word apply is by content-control anchor (`anz:C_NNNNN`). The add-in
+   AUTO-CLEANS stale anz tags before every run (owner rule: the document is
+   clean before the agent receives it) and anchors fresh. Only leaves Word
+   refuses to wrap (cover/title controls) fall back to a UNIQUE exact text
+   match — ambiguity aborts. Every apply/locate outcome lands in the
+   operation log.
 6. All LLM calls run via asyncio.to_thread (blocking litellm would starve
    the event loop and freeze the progress API).
 7. Every fix ships with a regression test keyed to the run that exposed it
@@ -38,7 +45,11 @@ Arabic, but ALL code, UI and docs are English.
 policy doc, press "Copy diagnostics", paste the JSON here; analyze leaks/
 quality, implement deterministic fixes + tests, push, they pull and rerun.
 
-**State as of run 4 (72d2c2e3b84a):** tables extract (238 cells), 24 clean
-actors, abbreviation table auto-feeds variants, missed-surface REVIEW channel
-works, 384/384 decide coverage across 49 parallel batches. Remaining rough
-edges and deferred items → `docs/BACKLOG.md`.
+**State as of run 5 (a30d8030eb59) + fix package:** pipeline is
+ingest → portrait (document context, ONE LLM call) → inventory →
+surface_scan → classify_rules → decide → assemble. Placeholder minting is
+function-aware (FUNCTION_TOKENS, frequency-ranked roles, PERSON-title rule);
+add-in v0.7.0 auto-cleans anchors, logs every operation, and text-fallback
+applies anchorless cover leaves. Run diagnostics carry events, per-stage
+seconds, peak parallelism and the operation log. Remaining rough edges and
+deferred items → `docs/BACKLOG.md`; rollback map → `docs/CHANGES.md`.

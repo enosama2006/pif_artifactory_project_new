@@ -23,6 +23,7 @@ root_agent = DeterministicChain(
     ),
     steps=[
         ("ingest", stages.ingest_stage),
+        ("portrait", stages.portrait_stage),
         ("inventory", stages.inventory_stage),
         ("surface_scan", stages.scan_stage),
         ("classify_rules", stages.classify_rules_stage),

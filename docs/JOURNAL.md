@@ -62,12 +62,6 @@ tag + duplicate-tag warning; payload carries row/column; add-in v0.6.0 —
 Locate (cycles mentions), per-change Edit (saved as edit_leaf intervention),
 table rows rendered/applied/rejected as one block.
 
-## How to continue
-Next diagnostics paste → compare against Run 4: placeholder quality
-(`<IT_department>`-style expected), false shared-anchor REVIEWs should vanish
-after Clean anchors + rerun, table rows should apply as blocks. Then work
-`docs/BACKLOG.md` top-down.
-
 ## Post-run-4 UX fix (2026-07-29)
 Owner report: Locate stopped finding the cover-page "Chief of Staff" title
 (a built-in Word control box) after the Clean-anchors + re-anchor cycle.
@@ -78,3 +72,50 @@ cover/title controls — those leaves end up with no anchor at all.
 plain Word text search on the mention's surface (with occurrence cycling) —
 safe because Locate only selects, never replaces. Floating text boxes
 (shapes) remain unreachable by both methods; noted in BACKLOG.
+
+## Run 5 — `a30d8030eb59` (2026-07-29)
+Anchors clean (C_00001..C_00383 sequential), 384/384 coverage, 32 actors,
+193 rewrites, 7 REVIEW — but placeholder quality REGRESSED and the add-in
+hid failures.
+**Found:** (1) PIF → `<data_training_participants>`: the role score's
+`-len()` term preferred the LONGEST identity-free role; (2) seven units
+collapsed into `<organisational_unit>.._7`: function vocabulary (technology,
+cybersecurity, legal…) counted as identity, so every descriptive role
+stripped to a husk; (3) CDO/PDPO/Legal Advisor → `<person>`/_2/_3: a job
+title restated as role was treated as a name echo; (4) 4 false "invented
+placeholder" REVIEWs: `use` came back comma-joined ("<a>, <b>") with every
+tag in the dictionary; (5) "Chief Data Officer" missed-surface REVIEW: only
+"Chief Data Officer (CDO)" and "CDO" were variants; (6) latent: LLM attached
+the generic phrase "Advanced Analytics & AI" to D&T's variants — shared
+generic variants can merge two REAL departments (order-dependent), and
+"Records & …" vs "Records and …" made two actors; (7) add-in: apply
+operations failed SILENTLY, cover leaves have no anchor and were skipped
+with only a log line; stale anchors needed a manual Clean click; (8) owner
+observed decide batches looking sequential; no way to verify from
+diagnostics; (9) no portrait: Groq rewrote text without knowing what the
+document IS.
+**Fixed:** role ranking (2-word target + extraction frequency, longest-wins
+removed); FUNCTION_TOKENS lexicon excluded from identity; PERSON-title rule
+(`<chief_data_officer>`); ranked-roles minting with SDAIA >3-name-word
+reconstruction guard; "&"→"and" key fold; parenthetical variant split;
+identity-gated variant merge + polluted-variant drop; comma-joined `use`
+accepted as advisory; NEW portrait stage feeding inventory, minting and
+decide; peak-parallelism counters + timestamped run events + per-stage
+seconds; add-in v0.7.0 — operation log (clean/anchor/locate/apply outcomes
+in diagnostics), auto-clean anchors before every run, unique-text apply
+fallback for anchorless leaves, applied/failed summaries.
+**Replay proof:** run-5 actors through the new merge → 30 clean actors,
+zero kind-fallback placeholders (`<owner_organization>`,
+`<technology_department>`, `<cybersecurity_department>`,
+`<chief_data_officer>`, …), AIAA restored as its own actor, Records
+duplicates merged.
+
+## How to continue
+Next diagnostics paste → compare against Run 5: dictionary should look like
+the replay above (no `<organisational_unit_N>`, no `<person_N>`); REVIEW
+should drop to ~3 legitimate items (SDAIA directives — SDAIA was never
+extracted; portrait may fix that too); `operation_log` in the diagnostics
+now shows every apply outcome — check FAILED lines first; `events` +
+"peak parallelism" in stage messages settle the sequential-batches question.
+Then work `docs/BACKLOG.md` top-down. Every change-set is mapped in
+`docs/CHANGES.md` for rollback.

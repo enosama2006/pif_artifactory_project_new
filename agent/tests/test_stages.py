@@ -66,6 +66,13 @@ class ScriptedLlm(StubLlm):
                 actors.append({"name": "سياسة أمن المعلومات", "kind": "INTERNAL_DOC",
                                "role": "الوثيقة نفسها", "variants": ["سياسة أمن المعلومات"]})
             return {"actors": actors}
+        if task == "portrait":
+            return {"portrait": {
+                "summary": "سياسة داخلية لأمن المعلومات.",
+                "document_function": "سياسة مؤسسية",
+                "owner": "صندوق الاستثمارات العامة", "audience": "الموظفون",
+                "actors": [{"name": "صندوق الاستثمارات العامة",
+                            "function": "الجهة المالكة"}]}}
         if task == "decide":
             out = {lf["id"]: {"decision": "REWRITE" if (lf["mentions"] or lf["cascade"]) else "KEEP",
                               "use": None, "reason": "scripted judgment"}
@@ -77,8 +84,9 @@ class ScriptedLlm(StubLlm):
 
 def run_pipeline(path, llm):
     state = {"input_path": path}
-    for fn in (stages.ingest_stage, stages.inventory_stage, stages.scan_stage,
-               stages.classify_rules_stage, stages.decide_stage, stages.assemble_stage):
+    for fn in (stages.ingest_stage, stages.portrait_stage, stages.inventory_stage,
+               stages.scan_stage, stages.classify_rules_stage, stages.decide_stage,
+               stages.assemble_stage):
         result = asyncio.run(fn(state, llm))
         assert result.get("ok", True), f"{fn.__name__}: {result.get('message')}"
         state.update(result.get("delta", {}))

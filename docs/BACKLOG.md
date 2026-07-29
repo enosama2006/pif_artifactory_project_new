@@ -3,10 +3,14 @@
 Ordered by owner priority. Every item lands with a regression test.
 
 ## Now / next runs
-1. **Run 5 calibration** — verify: function-style placeholders
-   (`<IT_department>`, `<policy_owner>`), no false shared-anchor REVIEWs
-   (owner must Clean anchors once, rerun), table rows applying as blocks,
-   Locate/Edit/Ignore flows.
+1. **Run 6 calibration** — verify: dictionary matches the run-5 replay in
+   `docs/JOURNAL.md` (no `<organisational_unit_N>`, no `<person_N>`);
+   `operation_log` shows applies OK (check FAILED lines first — cover
+   leaves should now apply via unique text match); portrait present in
+   diagnostics and sane; "peak parallelism" ≥ 2 in inventory/decide stage
+   messages; false "invented placeholder" REVIEWs gone (~3 legit REVIEWs
+   expected: SDAIA directives — SDAIA was never in the inventory; check
+   whether the portrait fixes that).
 2. **Abbreviation/definition tables (DEFERRED by owner, needs a decision).**
    Rows like `PIF | Public Investment Fund` map BOTH cells to one actor →
    `<owner> | <owner>` (meaningless duplication). Options discussed:

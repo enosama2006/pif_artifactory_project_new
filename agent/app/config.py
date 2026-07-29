@@ -28,6 +28,9 @@ INVENTORY_MAX_TOKENS = _int_env("ANONYMIZER_INVENTORY_MAX_TOKENS", 16000)
 # a "section" bigger than this is sub-split into multiple inventory calls
 INVENTORY_CHUNK_CHARS = _int_env("ANONYMIZER_INVENTORY_CHUNK_CHARS", 12000)
 
+# the portrait stage reads the skeleton + this much opening text (one call)
+PORTRAIT_SAMPLE_CHARS = _int_env("ANONYMIZER_PORTRAIT_SAMPLE_CHARS", 9000)
+
 BATCH_CHAR_BUDGET = _int_env("ANONYMIZER_BATCH_CHAR_BUDGET", 4000)
 DECIDE_BATCH_LEAVES = _int_env("ANONYMIZER_DECIDE_BATCH_LEAVES", 10)
 MAX_CONCURRENCY = _int_env("ANONYMIZER_MAX_CONCURRENCY", 6)

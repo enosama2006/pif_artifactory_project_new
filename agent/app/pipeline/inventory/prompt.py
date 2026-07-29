@@ -63,8 +63,12 @@ Return ONE JSON object, nothing else:
 "role": str (short, distinctive, in the document's language),
 "variants": [str, every surface form seen in THIS section]}}]}}
 
+DOCUMENT PORTRAIT (context — what this document is; use it to judge who is
+an actor and what generic function each one performs):
+{json.dumps(payload.get("portrait", {}), ensure_ascii=False)}
+
 SECTION:
-{json.dumps(payload, ensure_ascii=False)}"""
+{json.dumps({k: v for k, v in payload.items() if k != "portrait"}, ensure_ascii=False)}"""
 
 
 def build_classify_prompt(payload: dict) -> str:

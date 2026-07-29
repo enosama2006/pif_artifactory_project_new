@@ -310,3 +310,139 @@ def test_payload_carries_row_for_block_apply():
     res = validate_and_assemble(leaves, links, [Decision("L_000001", "REWRITE")], actors)
     assert res.payload[0]["row"] == "t1r1"
     assert res.payload[0]["column"] == "Name"
+
+
+# ── fifth real run (a30d8030eb59): placeholder quality + false REVIEWs ──────
+
+def test_role_ranking_prefers_concise_consensus_over_longest():
+    # PIF got <data_training_participants>: the old score preferred the
+    # LONGEST identity-free role. Two-word functional roles must win.
+    from app.pipeline.inventory import merge_actors
+    actors = merge_actors([[
+        {"name": "PIF", "kind": "ORG_OWNER", "role": "owner organization",
+         "variants": ["PIF", "Public Investment Fund"]},
+    ], [
+        {"name": "PIF", "kind": "ORG_OWNER", "role": "data training participants",
+         "variants": ["PIF"]},
+    ]])
+    a = next(iter(actors.values()))
+    assert a.placeholder == "<owner_organization>"
+
+
+def test_title_person_keeps_title_placeholder():
+    # CDO/PDPO got <person>/<person_2>: a job title carries no personal
+    # identity — the title itself is the correct placeholder.
+    from app.pipeline.inventory import merge_actors
+    actors = merge_actors([[
+        {"name": "Chief Data Officer (CDO)", "kind": "PERSON",
+         "role": "chief data officer",
+         "variants": ["Chief Data Officer (CDO)", "CDO"]},
+        {"name": "Personal Data Protection Officer (PDPO)", "kind": "PERSON",
+         "role": "personal data protection officer",
+         "variants": ["Personal Data Protection Officer (PDPO)", "PDPO"]},
+    ]])
+    phs = sorted(a.placeholder for a in actors.values())
+    assert phs == ["<chief_data_officer>", "<personal_data_protection_officer>"]
+
+
+def test_function_word_units_avoid_kind_fallback_flood():
+    # Seven units collapsed into <organisational_unit>.._7 because function
+    # vocabulary (technology, cybersecurity, …) counted as identity.
+    from app.pipeline.inventory import merge_actors
+    actors = merge_actors([[
+        {"name": "Digital & Technology Department", "kind": "ORG_UNIT",
+         "role": "technology department",
+         "variants": ["D&T", "Digital & Technology Department"]},
+        {"name": "Cybersecurity Risk Department", "kind": "ORG_UNIT",
+         "role": "cybersecurity department",
+         "variants": ["Cybersecurity Risk Department"]},
+        {"name": "Data and Committees Governance and Advisory Department",
+         "kind": "ORG_UNIT", "role": "data governance department",
+         "variants": ["DCGA", "Data and Committees Governance and Advisory Department"]},
+    ]])
+    phs = {a.name: a.placeholder for a in actors.values()}
+    assert phs["Digital & Technology Department"] == "<technology_department>"
+    assert phs["Cybersecurity Risk Department"] == "<cybersecurity_department>"
+    assert (phs["Data and Committees Governance and Advisory Department"]
+            == "<data_governance_department>")
+    assert not any(p.startswith("<organisational_unit") for p in phs.values())
+
+
+def test_ampersand_name_variants_merge_to_one_actor():
+    # "Records & Administration…" and "Records and Administration…" became
+    # TWO actors with two placeholders — "&" must fold to "and" in the key.
+    from app.pipeline.inventory import merge_actors
+    actors = merge_actors([[
+        {"name": "Records & Administration Center Department", "kind": "ORG_UNIT",
+         "role": "records administration department",
+         "variants": ["Records & Administration Center Department", "RAC"]},
+    ], [
+        {"name": "Records and Administration Center Department", "kind": "ORG_UNIT",
+         "role": "records management department",
+         "variants": ["Records and Administration Center Department"]},
+    ]])
+    assert len(actors) == 1
+
+
+def test_parenthetical_variant_splits_for_scan():
+    # "Chief Data Officer" hit REVIEW as a missed surface: the only variants
+    # were "Chief Data Officer (CDO)" and "CDO" — the bare title never matched.
+    from app.pipeline.inventory import merge_actors
+    actors = merge_actors([[
+        {"name": "Chief Data Officer (CDO)", "kind": "PERSON",
+         "role": "chief data officer", "variants": ["Chief Data Officer (CDO)"]},
+    ]])
+    leaves = [Leaf("L_000001", "paragraph",
+                   "The Chief Data Officer approves this framework.", "s1")]
+    links = scan(leaves, actors)
+    assert any(l.surface == "Chief Data Officer" for l in links)
+
+
+def test_reconcile_tolerates_comma_joined_valid_placeholders():
+    # 4 false REVIEWs: "use" came back as "<a>, <b>" (all in the dictionary).
+    # Advisory multi-use must pass through (spans drive the rewrite); a
+    # genuinely invented placeholder must still demote to REVIEW.
+    from app.pipeline.decide import reconcile_batch
+    allowed = {"<organisational_unit>", "<technology_department>"}
+    out = reconcile_batch(
+        ["L_1", "L_2"],
+        {"L_1": {"decision": "REWRITE",
+                 "use": "<organisational_unit>, <technology_department>"},
+         "L_2": {"decision": "REWRITE", "use": "<made_up_tag>"}},
+        allowed)
+    assert out[0].decision == "REWRITE" and out[0].placeholder is None
+    assert out[1].decision == "REVIEW"
+
+
+def test_portrait_hint_biases_placeholder():
+    # The portrait's document-level view of an actor's function must win
+    # placeholder minting over a stray per-chunk role.
+    from app.pipeline.inventory import merge_actors
+    actors = merge_actors(
+        [[{"name": "PIF", "kind": "ORG_OWNER",
+           "role": "data training participants", "variants": ["PIF"]}]],
+        portrait={"actors": [{"name": "PIF", "function": "owner organisation"}]})
+    a = next(iter(actors.values()))
+    assert a.placeholder == "<owner_organisation>"
+
+
+def test_generic_variant_pollution_does_not_merge_departments():
+    # Run-5 latent bug: the LLM attached the all-generic phrase
+    # "Advanced Analytics & AI" to the D&T department's variants; a shared
+    # generic variant must NOT merge two real departments, and the polluted
+    # variant must be dropped from the unrelated actor.
+    from app.pipeline.inventory import merge_actors
+    actors = merge_actors([[
+        {"name": "Digital & Technology Department", "kind": "ORG_UNIT",
+         "role": "technology department",
+         "variants": ["D&T", "Digital & Technology", "Advanced Analytics & AI"]},
+    ], [
+        {"name": "Advanced Analytics & AI Department", "kind": "ORG_UNIT",
+         "role": "advanced analytics department",
+         "variants": ["AIAA", "Advanced Analytics & AI"]},
+    ]])
+    assert len(actors) == 2
+    dt = next(a for a in actors.values() if a.name.startswith("Digital"))
+    assert "Advanced Analytics & AI" not in dt.variants
+    aiaa = next(a for a in actors.values() if a.name.startswith("Advanced"))
+    assert "Advanced Analytics & AI" in aiaa.variants   # related → kept

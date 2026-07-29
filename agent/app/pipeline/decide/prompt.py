@@ -28,6 +28,10 @@ Return ONE JSON object, nothing else:
 {{"decisions": {{"<leaf_id>": {{"decision": "REWRITE"|"KEEP"|"REVIEW",
 "use": str|null, "reason": str}}}}}}
 
+DOCUMENT PORTRAIT (context — what this document is, who owns it, what each
+key actor does; judge every rewrite against this understanding):
+{json.dumps(payload.get("portrait", {}), ensure_ascii=False)}
+
 DOCUMENT SKELETON (structure context only — where the text below sits;
 never rewrite the skeleton itself):
 {json.dumps(payload.get("skeleton", []), ensure_ascii=False)}

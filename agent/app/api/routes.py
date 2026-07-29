@@ -23,7 +23,7 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-app = FastAPI(title="anonymizer-agent", version="0.3.0")
+app = FastAPI(title="anonymizer-agent", version="0.4.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"],
                    allow_methods=["*"], allow_headers=["*"])
 
@@ -32,7 +32,7 @@ INTERVENTION_TYPES = {
     "ignore_actor", "accept_leaf", "reject_leaf", "edit_leaf", "annotate",
 }
 
-STAGE_NAMES = ["ingest", "inventory", "surface_scan",
+STAGE_NAMES = ["ingest", "portrait", "inventory", "surface_scan",
                "classify_rules", "decide", "assemble"]
 
 RUNS: dict[str, dict] = {}   # in-memory run registry (results also hit SQLite)
@@ -56,6 +56,8 @@ def health():
 
 
 async def _execute(run_id: str, doc_path: str) -> None:
+    import time
+
     from _adk import stages as S
     from ..llm import get_llm
     from ..store import Store
@@ -63,15 +65,28 @@ async def _execute(run_id: str, doc_path: str) -> None:
     rec = RUNS[run_id]
     llm = get_llm()
     rec["llm_mode"] = "stub" if llm.is_stub else "groq"
-    # live sub-stage detail ("inventory: chunk 12/38") for the add-in's poll
-    state: dict = {"input_path": doc_path,
-                   "_progress": lambda msg: rec.__setitem__("detail", msg)}
-    fns = [S.ingest_stage, S.inventory_stage, S.scan_stage,
+    # Live sub-stage detail ("decide: 12/49 done, 6 in flight") for the
+    # add-in's poll, PLUS a timestamped event history — the owner must be
+    # able to see afterwards what happened in the background and when
+    # (run-5 ask: prove whether batches truly overlap).
+    t0 = time.monotonic()
+    rec["events"] = []
+
+    def _progress(msg: str) -> None:
+        rec["detail"] = msg
+        rec["events"].append({"t": round(time.monotonic() - t0, 1), "msg": msg})
+        if len(rec["events"]) > 1000:          # bounded — this record is polled
+            del rec["events"][:200]
+
+    state: dict = {"input_path": doc_path, "_progress": _progress}
+    fns = [S.ingest_stage, S.portrait_stage, S.inventory_stage, S.scan_stage,
            S.classify_rules_stage, S.decide_stage, S.assemble_stage]
 
     for name, fn in zip(STAGE_NAMES, fns):
         rec["current_stage"] = name
         rec["detail"] = ""
+        _progress(f"stage {name} started")
+        stage_t0 = time.monotonic()
         try:
             result = await fn(state, llm)
         except Exception as exc:  # surface, never hang
@@ -79,7 +94,9 @@ async def _execute(run_id: str, doc_path: str) -> None:
             return
         rec["stages"].append({"stage": name,
                               "message": result.get("message", ""),
-                              "ok": result.get("ok", True)})
+                              "ok": result.get("ok", True),
+                              "seconds": round(time.monotonic() - stage_t0, 1)})
+        _progress(f"stage {name} finished in {round(time.monotonic() - stage_t0, 1)}s")
         state.update(result.get("delta", {}))
         if not result.get("ok", True):
             rec.update(status="error", error=result.get("message"), current_stage=None)
@@ -99,6 +116,7 @@ async def _execute(run_id: str, doc_path: str) -> None:
         "decisions": state.get("decisions", []),
         "classifications": state.get("classifications", []),
         "cascade": state.get("cascade", []),
+        "portrait": state.get("portrait", {}),
     }
     rec.update(status="completed", current_stage=None)
     try:

@@ -13,11 +13,12 @@
  */
 /* global Office, Word, fetch, document */
 
-const UI_VERSION = "0.6.1";        // bump when the pane changes — shown in the header
+const UI_VERSION = "0.7.0";        // bump when the pane changes — shown in the header
 let RUN = null;                    // completed run result
 let SERVER = "http://localhost:8080";
 const STAGE_LABELS = {
   ingest: "Ingest — leaf inventory",
+  portrait: "Portrait — document context (LLM)",
   inventory: "Actor inventory (LLM)",
   surface_scan: "Surface scan",
   classify_rules: "Classify + breakage rules",
@@ -33,6 +34,15 @@ const log = (msg) => {
   el.textContent += (el.textContent ? "\n" : "") + msg;
   el.scrollTop = el.scrollHeight;
 };
+
+/* Operation log — every search/apply/clean operation is recorded with its
+ * outcome, so nothing fails silently (run-5 owner ask). Mirrored into the
+ * visible log and shipped inside the diagnostics report. */
+const OPLOG = [];
+function op(kind, msg) {
+  OPLOG.push({ t: new Date().toISOString().slice(11, 23), kind, msg });
+  log(`[${kind}] ${msg}`);
+}
 
 Office.onReady(() => {
   $("uiVersion").textContent = "ui v" + UI_VERSION;
@@ -91,6 +101,25 @@ async function anchorRange(start, end) {
   return { anchored, skipped };
 }
 
+/* Auto-clean: remove ALL anz anchors left by earlier runs BEFORE the agent
+ * receives the document (run-5 owner rule: "clean before the agent gets it").
+ * Content is kept; only the control wrappers go. This removes the whole
+ * duplicate-tag failure class — every run anchors fresh from C_00001. */
+async function autoCleanAnchors() {
+  let removed = 0;
+  await Word.run(async (ctx) => {
+    const ccs = ctx.document.contentControls;
+    ccs.load("items/tag");
+    await ctx.sync();
+    const stale = ccs.items.filter(c => (c.tag || "").startsWith("anz:"));
+    stale.forEach(c => c.delete(true));   // true = keep the content
+    removed = stale.length;
+    await ctx.sync();
+  });
+  anchorSeq = 0;
+  return removed;
+}
+
 async function anchorDocument() {
   let total = 0;
   let duplicateTags = 0;
@@ -101,9 +130,10 @@ async function anchorDocument() {
     ccs.load("items/tag");
     await ctx.sync();
     total = paras.items.length;
-    // Tag numbering must CONTINUE from the highest existing anz index —
-    // restarting at 1 collided with tags left by earlier runs and produced
-    // duplicate anchors on unrelated paragraphs (real-run 72d2c2e3b84a).
+    // Auto-clean runs first, so normally no anz tags survive here; this is a
+    // belt-and-braces pass — if cleaning was skipped/failed we still CONTINUE
+    // from the highest existing index (restarting at 1 collided with old tags
+    // and produced duplicate anchors — real-run 72d2c2e3b84a).
     const seen = {};
     let maxIdx = 0;
     ccs.items.forEach(c => {
@@ -116,8 +146,8 @@ async function anchorDocument() {
     anchorSeq = maxIdx;
   });
   if (duplicateTags > 0) {
-    log(`WARNING: ${duplicateTags} duplicate anchor tag(s) from an older run detected — ` +
-        `click "Clean anchors", then run again for precise apply.`);
+    op("anchor", `WARNING: ${duplicateTags} duplicate anchor tag(s) survived cleaning — ` +
+        `apply may hit the wrong paragraph for those.`);
   }
 
   let anchored = 0, skipped = 0, failed = 0;
@@ -165,13 +195,25 @@ async function runPipeline() {
   ["secDict", "secReview", "secChanges"].forEach(s => show(s, false));
   show("metrics", false);
   try {
+    // Owner rule (run 5): the document must be CLEAN before the agent
+    // receives it — stale anchors from earlier runs are removed automatically.
+    try {
+      const removed = await autoCleanAnchors();
+      op("clean", removed
+        ? `${removed} stale anchor(s) from earlier runs removed automatically — document is clean.`
+        : "no stale anchors — document already clean.");
+    } catch (cleanErr) {
+      op("clean", "WARNING: auto-clean failed (" + fmtErr(cleanErr) +
+         ") — continuing; anchor numbering will avoid collisions.");
+    }
+
     log("Anchoring paragraphs with content controls…");
     let a = { anchored: 0, skipped: 0, failed: 0, total: 0 };
     try {
       a = await anchorDocument();
-      log(`Anchored ${a.anchored}/${a.total} paragraph(s)` +
+      op("anchor", `${a.anchored}/${a.total} paragraph(s) anchored` +
           (a.skipped ? `, ${a.skipped} skipped (empty/already tagged)` : "") +
-          (a.failed ? `, ${a.failed} refused by Word` : "") + ".");
+          (a.failed ? `, ${a.failed} refused by Word (cover/title controls have no anchor)` : "") + ".");
     } catch (anchorErr) {
       // Anchoring is an optimization, not a prerequisite: continue without it —
       // unanchored changes are listed for manual application.
@@ -248,8 +290,10 @@ function indexSpans() {
  * text search — safe here because Locate only SELECTS, never replaces. */
 async function selectByAnchorOrText(anchor, text, nth = 0) {
   if (anchor) {
-    try { await withCc(anchor, async (_c, cc) => cc.select()); return "anchor"; }
-    catch { /* fall through to text search */ }
+    try { await withCc(anchor, async (_c, cc) => cc.select()); return "anchor " + anchor; }
+    catch (e) {
+      op("locate", `anchor ${anchor} lookup failed (${fmtErr(e)}) — falling back to text search`);
+    }
   }
   if (!text) throw new Error("nothing to locate");
   let how = "";
@@ -257,6 +301,7 @@ async function selectByAnchorOrText(anchor, text, nth = 0) {
     const found = ctx.document.body.search(text.slice(0, 120), { matchCase: true });
     found.load("items");
     await ctx.sync();
+    op("locate", `text search "${text.slice(0, 60)}" → ${found.items.length} match(es)`);
     if (!found.items.length) throw new Error("not found by anchor or text (floating text box?)");
     found.items[Math.min(nth, found.items.length - 1)].select();
     how = "text search";
@@ -408,30 +453,74 @@ async function withCc(anchor, fn) {
   });
 }
 
+/* Text-search fallback for leaves without an anchor (Word refuses to wrap
+ * built-in cover/title controls). Replaces ONLY on an exact, UNIQUE match —
+ * zero or multiple matches abort, because guessing would corrupt text. */
+async function replaceByUniqueText(p) {
+  const needle = p.before || "";
+  if (!needle) throw new Error("empty source text");
+  if (needle.length > 250)
+    throw new Error(`text too long for the search fallback (${needle.length} chars)`);
+  await Word.run(async (ctx) => {
+    try { ctx.document.changeTrackingMode = "TrackAll"; } catch { /* WordApi<1.4 */ }
+    const found = ctx.document.body.search(needle, { matchCase: true });
+    found.load("items");
+    await ctx.sync();
+    if (found.items.length === 0) throw new Error("text not found in body");
+    if (found.items.length > 1)
+      throw new Error(`ambiguous — ${found.items.length} matches, skipped for safety`);
+    found.items[0].insertText(p.after, "Replace");
+    await ctx.sync();
+  });
+  return "unique text match";
+}
+
+/* Every apply is LOGGED with its outcome — run-5 finding: replacements were
+ * failing with no trace. Returns true on success so applyAll can count. */
 async function applyOne(i) {
   const p = RUN.payload[i];
-  if (!p.anchor) {
-    log(`No anchor for ${p.leaf_id} (page header/footer?) — apply manually: ${p.after}`);
-    return;
+  const id = p.leaf_id + (p.anchor ? ` (${p.anchor})` : " (no anchor)");
+  let via = null;
+  const errs = [];
+  if (p.anchor) {
+    try {
+      await withCc(p.anchor, async (_ctx, cc) => cc.insertText(p.after, "Replace"));
+      via = "anchor";
+    } catch (e) { errs.push("anchor: " + fmtErr(e)); }
+  } else {
+    errs.push("no anchor (Word refused to wrap this paragraph — cover/title control)");
   }
-  try {
-    await withCc(p.anchor, async (_ctx, cc) => cc.insertText(p.after, "Replace"));
+  if (!via) {
+    try { via = await replaceByUniqueText(p); }
+    catch (e) { errs.push("text fallback: " + fmtErr(e)); }
+  }
+  if (via) {
+    op("apply", `OK ${id} via ${via}`);
     p.applied = true;
+    p.failed = false;
     const el = $("chg_" + i);
     if (el) el.classList.add("applied");
     const cell = $("cell_" + i);
     if (cell) cell.style.opacity = 0.45;
-    intervene("accept_leaf", p.leaf_id, {});
-  } catch (e) { log("ERROR: " + fmtErr(e)); }
+    intervene("accept_leaf", p.leaf_id, { via });
+    return true;
+  }
+  p.failed = true;
+  op("apply", `FAILED ${id} — ${errs.join("; ")} — intended text: ${p.after}`);
+  return false;
 }
 
 async function applyAll() {
+  let ok = 0;
+  const failed = [];
   for (let i = 0; i < (RUN.payload || []).length; i++) {
     const p = RUN.payload[i];
     if (p.empty || p.rejected || p.applied) continue;
-    await applyOne(i);
+    (await applyOne(i)) ? ok++ : failed.push(p.leaf_id);
   }
-  log("All changes applied as tracked changes — review them in Word's Review tab.");
+  op("apply", `SUMMARY: ${ok} applied, ${failed.length} failed` +
+      (failed.length ? ` — ${failed.join(", ")}` : "") +
+      ". Review them in Word's Review tab (tracked changes).");
 }
 
 async function goTo(i) {
@@ -450,11 +539,12 @@ function reject(i) {
 
 /* row = one connected block: its cells apply together, reject together */
 async function applyRow(idxs) {
-  for (const i of idxs) await applyOne(i);
+  let ok = 0;
+  for (const i of idxs) { if (await applyOne(i)) ok++; }
   const rk = RUN.payload[idxs[0]].row;
   const el = $("row_" + rk);
   if (el) el.classList.add("applied");
-  log(`Row ${rk}: ${idxs.length} cell(s) applied as one block.`);
+  op("apply", `row ${rk}: ${ok}/${idxs.length} cell(s) applied as one block.`);
 }
 
 function rejectRow(idxs, rk) {
@@ -497,14 +587,8 @@ function renamePlaceholder(actorId) {
 }
 
 async function removeAnchors() {
-  await Word.run(async (ctx) => {
-    const ccs = ctx.document.contentControls;
-    ccs.load("items/tag");
-    await ctx.sync();
-    ccs.items.forEach(c => { if ((c.tag || "").startsWith("anz:")) c.delete(true); });
-    await ctx.sync();
-  });
-  log("Anchors removed (content kept).");
+  const removed = await autoCleanAnchors();
+  op("clean", `${removed} anchor(s) removed manually (content kept).`);
 }
 
 /* ── diagnostics report — paste it to the developer/assistant to evaluate ── */
@@ -518,11 +602,15 @@ async function copyDiagnostics() {
   const r = (full && full.result) || RUN;
 
   const report = {
-    diagnostics_version: 1,
+    diagnostics_version: 2,
     generated_at: new Date().toISOString(),
+    ui_version: UI_VERSION,
     run_id: RUN.run_id,
     llm_mode: RUN.llm_mode,
-    stages: (full && full.stages) || [],
+    stages: (full && full.stages) || [],           // now carry per-stage seconds
+    events: (full && full.events) || [],           // timestamped background activity
+    portrait: r.portrait || {},
+    operation_log: OPLOG,                          // clean/anchor/locate/apply outcomes
     metrics: r.metrics || {},
     original_leaves: (r.leaves || []).map(l => ({
       id: l.leaf_id, kind: l.kind, section: l.section,

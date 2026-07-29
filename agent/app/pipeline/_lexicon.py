@@ -41,3 +41,22 @@ GENERIC_TOKENS = {
     "intelligence", "business", "content", "freedom", "information",
     "open", "access",
 }
+
+# Function/profession vocabulary: words that describe WHAT an actor does, not
+# WHO it is. They may appear inside a unit's proper name ("Digital &
+# Technology Department") without carrying identity — treating them as
+# identity produced the run-5 placeholder flood (<organisational_unit>.._7)
+# because every descriptive role got stripped down to a husk. Safe inside
+# placeholders; NOT counted when deciding whether an actor is all-generic.
+FUNCTION_TOKENS = {
+    "technology", "technologies", "digital", "digitisation", "digitization",
+    "cyber", "cybersecurity", "audit", "auditing", "legal", "counsel",
+    "privacy", "finance", "financial", "procurement", "communications",
+    "communication", "marketing", "innovation", "transformation", "planning",
+    "resilience", "artificial", "organisation", "organization",
+    "organisations", "organizations", "organisational", "organizational",
+    "institution", "institutions", "regulator", "regulators", "agency",
+    "agencies", "authority", "authorities", "director", "directors",
+    "president", "deputy", "vice", "manager", "managers", "function",
+    "functions",
+}

@@ -63,7 +63,8 @@ def test_api_run_returns_anchored_payload():
     assert r["ok"] is True
     assert r["status"] == "completed"
     assert [s["stage"] for s in r["stages"]] == [
-        "ingest", "inventory", "surface_scan", "classify_rules", "decide", "assemble"]
+        "ingest", "portrait", "inventory", "surface_scan",
+        "classify_rules", "decide", "assemble"]
     m = r["result"]["metrics"]
     assert m["coverage"] == 1.0 and m["silent_losses"] == 0
 

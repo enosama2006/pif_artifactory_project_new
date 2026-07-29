@@ -7,9 +7,12 @@ Counting, not trust. Every leaf ID sent must come back with a decision:
 Silent loss is structurally impossible: the only exits are a valid decision
 or a visible REVIEW item.
 """
+import re
 from dataclasses import dataclass
 
 VALID_DECISIONS = {"REWRITE", "KEEP", "REVIEW"}
+
+_TAG = re.compile(r"<[^<>\s]+>")
 
 
 @dataclass
@@ -42,9 +45,18 @@ def reconcile_batch(sent_leaf_ids: list[str], response: dict,
             continue
         ph = entry.get("use")
         if decision == "REWRITE" and ph is not None and ph not in allowed_placeholders:
-            out.append(Decision(leaf_id, "REVIEW",
-                                reason=f"invented placeholder {ph} — not in the locked dictionary"))
-            continue
+            # A leaf with several mentions often comes back with "use" as a
+            # comma-joined list ("<a>, <b>") — that is advisory, not invented
+            # (run-5: 4 false REVIEWs on rows like "DCGA, D&T"). If every tag
+            # inside is in the locked dictionary, accept the REWRITE with no
+            # single placeholder: the pre-linked spans drive the rewrite.
+            tags = _TAG.findall(str(ph))
+            if tags and all(t in allowed_placeholders for t in tags):
+                ph = None
+            else:
+                out.append(Decision(leaf_id, "REVIEW",
+                                    reason=f"invented placeholder {ph} — not in the locked dictionary"))
+                continue
         out.append(Decision(leaf_id, decision, placeholder=ph,
                             reason=entry.get("reason", "")))
     return out

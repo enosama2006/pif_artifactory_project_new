@@ -58,7 +58,52 @@ async def ingest_stage(state, llm):
                       "leaf_count": usd.leaf_count}}
 
 
-# ── 2. inventory (LLM per section) + deterministic merge, dictionary LOCKED ─
+# ── 2. portrait (LLM, ONE call) — document context for every later stage ───
+#
+# Owner's design: before extraction, understand WHAT the document is — its
+# function, owner, audience, and key actors' functions. Inventory extracts
+# with that context, placeholder minting prefers the portrait's view of an
+# actor's function, and decide rewrites knowing the document's purpose.
+# A failed or stub portrait is EMPTY, never fatal: the pipeline degrades to
+# context-free behavior instead of dying on one optional call.
+
+async def portrait_stage(state, llm):
+    import asyncio
+
+    from app import config
+    from app.pipeline.batching import build_skeleton
+    from app.pipeline.portrait import build_portrait_prompt
+
+    leaves = _leaves(state)
+    sample, size = [], 0
+    for lf in leaves:
+        sample.append({"kind": lf.kind, "text": lf.text})
+        size += len(lf.text)
+        if size > config.PORTRAIT_SAMPLE_CHARS:
+            break
+    payload = {"task": "portrait", "skeleton": build_skeleton(leaves),
+               "sample": sample}
+    portrait: dict = {}
+    try:
+        data = await asyncio.to_thread(
+            llm.json_call, build_portrait_prompt(payload), payload=payload)
+        if isinstance(data, dict) and isinstance(data.get("portrait"), dict):
+            portrait = data["portrait"]
+    except Exception:
+        portrait = {}
+    if not portrait:
+        return {"ok": True,
+                "message": ("no portrait (stub mode or call failed) — "
+                            "continuing without document context"),
+                "delta": {"portrait": {}}}
+    return {"ok": True,
+            "message": (f"{str(portrait.get('document_function', '?'))[:90]} — "
+                        f"owner: {portrait.get('owner', '?')}, "
+                        f"{len(portrait.get('actors') or [])} key actor(s)"),
+            "delta": {"portrait": portrait}}
+
+
+# ── 3. inventory (LLM per section) + deterministic merge, dictionary LOCKED ─
 
 def _inventory_chunks(leaves):
     """Section-bounded chunks, sub-split by char budget — one huge 'root'
@@ -92,17 +137,22 @@ async def inventory_stage(state, llm):
 
     progress = state.get("_progress") or (lambda msg: None)
     leaves = _leaves(state)
+    portrait = state.get("portrait") or {}
     skeleton = build_skeleton(leaves)  # structure context in every chunk
     chunks = list(_inventory_chunks(leaves))
     sem = asyncio.Semaphore(config.MAX_CONCURRENCY)
-    done = 0
+    done, inflight, peak = 0, 0, 0
 
     async def run_chunk(sec, chunk):
-        nonlocal done
+        nonlocal done, inflight, peak
         payload = {"task": "inventory", "section": sec, "skeleton": skeleton,
+                   "portrait": portrait,
                    "leaves": [{"id": l.leaf_id, "kind": l.kind, "text": l.text}
                               for l in chunk]}
         async with sem:
+            inflight += 1
+            peak = max(peak, inflight)
+            progress(f"inventory: {done}/{len(chunks)} done, {inflight} in flight")
             try:
                 data = await asyncio.to_thread(
                     llm.json_call, build_inventory_prompt(payload),
@@ -111,8 +161,9 @@ async def inventory_stage(state, llm):
             except Exception:   # one chunk must not kill the run — the residual
                 return None     # leak sweep + review queue compensate downstream
             finally:
+                inflight -= 1
                 done += 1
-                progress(f"inventory: chunk {done}/{len(chunks)}")
+                progress(f"inventory: {done}/{len(chunks)} done, {inflight} in flight")
 
     results = await asyncio.gather(*(run_chunk(s, c) for s, c in chunks))
     extractions = [r for r in results if r is not None]
@@ -121,8 +172,9 @@ async def inventory_stage(state, llm):
         return {"ok": False,
                 "message": f"inventory failed on all {failed} chunk(s) — aborting"}
 
-    actors = merge_actors(extractions)
+    actors = merge_actors(extractions, portrait=portrait)
     msg = (f"{len(actors)} actors from {len(chunks) - failed}/{len(chunks)} chunk(s)"
+           f" (peak parallelism {peak})"
            + (f" ({failed} chunk(s) FAILED — coverage reduced, check review queue)"
               if failed else "")
            + ("; dictionary LOCKED: "
@@ -135,7 +187,7 @@ async def inventory_stage(state, llm):
                       "inventory_failed_chunks": failed}}
 
 
-# ── 3. surface scan (deterministic — the no-drop net) ───────────────────────
+# ── 4. surface scan (deterministic — the no-drop net) ───────────────────────
 
 async def scan_stage(state, llm):
     links = scan(_leaves(state), _actors(state))
@@ -143,7 +195,7 @@ async def scan_stage(state, llm):
             "delta": {"links": [asdict(l) for l in links]}}
 
 
-# ── 4. candidates + closed-enum classify + breakage cascade ─────────────────
+# ── 5. candidates + closed-enum classify + breakage cascade ─────────────────
 
 async def classify_rules_stage(state, llm):
     leaves = _leaves(state)
@@ -178,7 +230,7 @@ async def classify_rules_stage(state, llm):
                       "cascade": [asdict(h) for h in hits]}}
 
 
-# ── 5. decide (LLM, batched over ALL leaves) + per-leaf-ID reconciliation ───
+# ── 6. decide (LLM, batched over ALL leaves) + per-leaf-ID reconciliation ───
 #
 # STRUCTURE vs TEXT separation (owner's design rule): the document skeleton
 # accompanies EVERY batch as context; the text itself is partitioned so that
@@ -197,6 +249,7 @@ async def decide_stage(state, llm):
     actors = _actors(state)
     links = _links(state)
     cascade = state.get("cascade", [])
+    portrait = state.get("portrait") or {}
 
     links_by_leaf: dict[str, list] = {}
     for l in links:
@@ -224,7 +277,7 @@ async def decide_stage(state, llm):
 
     sem = asyncio.Semaphore(config.MAX_CONCURRENCY)
     progress = state.get("_progress") or (lambda msg: None)
-    done = 0
+    done, inflight, peak = 0, 0, 0
 
     def process_batch(batch, payload):
         """Whole batch — call, reconcile, per-leaf retries — runs in ONE
@@ -241,20 +294,25 @@ async def decide_stage(state, llm):
         return reconcile_batch(batch.leaf_ids, response, allowed, retry_fn=retry)
 
     async def run_batch(batch):
-        nonlocal done
+        nonlocal done, inflight, peak
         batch_tables = {(leaf_by_id[i].row or ":").split("r")[0]
                         for i in batch.leaf_ids if leaf_by_id[i].row}
         payload = {"task": "decide", "skeleton": skeleton,
+                   "portrait": portrait,
                    "batch_sections": batch.sections, "dictionary": dictionary,
                    "table_headers": {t: h for t, h in table_headers.items()
                                      if t in batch_tables},
                    "leaves": [leaf_payload(i) for i in batch.leaf_ids]}
         async with sem:
+            inflight += 1
+            peak = max(peak, inflight)   # proves batches truly overlap
+            progress(f"decide: {done}/{len(batches)} done, {inflight} in flight")
             try:
                 return await asyncio.to_thread(process_batch, batch, payload)
             finally:
+                inflight -= 1
                 done += 1
-                progress(f"decide: batch {done}/{len(batches)}")
+                progress(f"decide: {done}/{len(batches)} done, {inflight} in flight")
 
     results = await asyncio.gather(*(run_batch(b) for b in batches),
                                    return_exceptions=True)
@@ -271,12 +329,13 @@ async def decide_stage(state, llm):
     reviews = sum(1 for d in decisions if d.decision == "REVIEW")
     return {"ok": True,
             "message": (f"{len(decisions)}/{len(leaves)} decisions across "
-                        f"{len(batches)} batch(es) ({reviews} REVIEW)"),
+                        f"{len(batches)} batch(es), peak parallelism {peak} "
+                        f"({reviews} REVIEW)"),
             "delta": {"decisions": [asdict(d) for d in decisions],
                       "batch_count": len(batches)}}
 
 
-# ── 6. validate + assemble (hard gates) ──────────────────────────────────────
+# ── 7. validate + assemble (hard gates) ──────────────────────────────────────
 
 async def assemble_stage(state, llm):
     leaves = _leaves(state)
