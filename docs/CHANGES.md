@@ -11,6 +11,74 @@ Each change-set maps to ONE commit; find its hash with
 
 ---
 
+## Change-set: Post-run-5 owner feedback (2026-07-29)
+
+Trigger: owner screenshots — cover "Chief of Staff" is a built-in dropdown
+control Locate can't reach; list must follow paper order with editable
+inline REVIEW; "April 2025" (document date) left unchanged; dates per
+context. Deep finding: cascade fired 0× in run 5 and YAML placeholders
+were Arabic.
+
+### agent/app/pipeline/rules/breakage_rules.yaml
+- **What:** placeholders now ENGLISH (`<date>`, `<reference_number>`,
+  `<contact_details>`); `when_hidden_class` is a list; new rule
+  `identity_orphaned_qualifiers` (hidden PERSON/ORG_* → same-row
+  dates/reference numbers follow).
+- **Why:** run 5: only hidden DOC names triggered rules → cascade 0×;
+  Arabic tags violated the English-only iron rule.
+- **Rollback:** restore previous YAML; engine still accepts single-string
+  `when_hidden_class`.
+
+### agent/app/pipeline/rules/engine.py
+- **What:** `hidden_rows` is now `{row: {hidden classes}}` (plain set still
+  accepted = class unknown); per-surface dedupe across rules; fallback
+  placeholder `<redacted>`.
+- **Rollback:** revert this function only; the YAML list-form
+  `when_hidden_class` also needs reverting then.
+
+### agent/app/pipeline/candidates/sweep.py
+- **What:** `_DATE_PATTERNS` extracted + `whole_text_is_date()`; new
+  DECISION_NO patterns for `92/1445` (lookarounds keep it out of full
+  dates) and compact codes like `Y24M06D02`.
+- **Rollback:** drop the two patterns + helper; classify/cascade for those
+  codes disappears again.
+
+### agent/_adk/stages.py (classify_rules_stage)
+- **What:** hidden rows collected from ALL actor links with kind→class
+  mapping; deterministic `document_date_on_cover` pass (whole-leaf date,
+  no row, before the first heading → `<document_date>`).
+- **Rollback:** restore the doc-only `hidden_rows` set and delete the
+  cover-date loop.
+
+### agent/app/pipeline/validate_assemble/validate.py
+- **What:** cascade hits are a RULE — a KEEP decision on a cascade leaf is
+  upgraded to REWRITE (REVIEW still wins); multiple cascade hits per leaf;
+  cascade spans merge with mention spans (overlap defers to the mention).
+- **Why:** Groq had KEPT the dates; single-hit dict silently dropped extras.
+- **Rollback:** restore the single `cascade_by_leaf` dict block — the KEEP
+  override is the piece that forces date masking, remove it consciously.
+
+### addin/taskpane.js (0.7.0 → 0.7.1)
+- **What:** (1) `autoCleanAnchors` now unwraps EVERY content control (text
+  kept, `cannotDelete` cleared, one-by-one retry fallback) — cover dropdown
+  boxes become plain, anchorable text; (2) changes list rendered in
+  document order (payload sorted by leaf id; row card sits at its first
+  cell); (3) REVIEW leaves absorbed into the list as inline cards (badge +
+  reason, Edit/Locate only, `after = before` until edited, skipped by
+  Apply All); (4) occurrence-exact text fallback `replaceByTextOccurrence`
+  (hit #n of m, abort on count mismatch) + `anchorlessOrdinal` used by
+  goTo and applyOne.
+- **Rollback:** each function is separately revertable from the previous
+  commit; unwrapping is the behavioral change to reconsider first if a
+  document's controls must survive.
+
+### Tests
+- 5 new: identity-row cascade, English-placeholder guard, reference-code
+  sweep, cover document date, cascade-overrides-KEEP (57 total).
+- Updated: end-to-end cascade expectations to English placeholders.
+
+---
+
 ## Change-set: Run-5 fix package (2026-07-29)
 
 Trigger: run `a30d8030eb59` diagnostics + owner findings (silent apply

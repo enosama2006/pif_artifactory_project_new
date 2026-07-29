@@ -446,3 +446,81 @@ def test_generic_variant_pollution_does_not_merge_departments():
     assert "Advanced Analytics & AI" not in dt.variants
     aiaa = next(a for a in actors.values() if a.name.startswith("Advanced"))
     assert "Advanced Analytics & AI" in aiaa.variants   # related → kept
+
+
+# ── run-5 OWNER FEEDBACK: dates/references per context, cover document date ─
+
+def test_identity_hidden_row_cascades_date_and_reference():
+    # Approval row: person hidden → its date and reference number must
+    # follow (run 5: cascade fired 0× — rules only knew hidden DOC names).
+    from app.pipeline.rules import apply_rules, load_rules
+    leaves = [
+        Leaf("L_000001", "table_cell", "Prepared by", "s1", row="t1r1"),
+        Leaf("L_000002", "table_cell", "Saad X", "s1", row="t1r1"),
+        Leaf("L_000003", "table_cell", "September 2024", "s1", row="t1r1"),
+        Leaf("L_000004", "table_cell", "92/1445", "s1", row="t1r1"),
+    ]
+    hits = apply_rules(load_rules(), leaves, {"t1r1": {"PERSON"}}, [
+        {"leaf_id": "L_000003", "surface": "September 2024",
+         "class": "QUALIFIER_OF_IDENTIFIER"},
+        {"leaf_id": "L_000004", "surface": "92/1445",
+         "class": "INSTANCE_IDENTIFIER"},
+    ])
+    assert {(h.leaf_id, h.placeholder) for h in hits} == {
+        ("L_000003", "<date>"), ("L_000004", "<reference_number>")}
+
+
+def test_breakage_placeholders_are_english():
+    # Iron rule: Arabic is the chat language ONLY — run 5 shipped Arabic
+    # cascade tags (<رقم_القرار>) that would land inside an EN document.
+    from app.pipeline.rules import load_rules
+    for rule in load_rules():
+        for ph in rule["placeholders"].values():
+            assert re.fullmatch(r"<[a-z_]+>", ph), ph
+
+
+def test_sweep_finds_reference_codes():
+    # "92/1445" and "Y24M06D02" escaped the sweep in run 5 → never
+    # classified → never cascaded.
+    leaves = [Leaf("L_000001", "table_cell", "92/1445", "s1"),
+              Leaf("L_000002", "table_cell", "Y24M06D02", "s1"),
+              Leaf("L_000003", "table_cell", "12/3/1445", "s1")]
+    got = {(c["surface"], c["hint"]) for c in sweep(leaves)}
+    assert ("92/1445", "DECISION_NO") in got
+    assert ("Y24M06D02", "DECISION_NO") in got
+    assert not any(s == "3/1445" for s, _ in got)   # inside a full date ≠ a ref
+
+
+def test_cover_document_date_is_masked():
+    # Owner rule: the document's own date ("April 2025" on the cover) is
+    # never left as-is; a date inside a sentence after a heading is not
+    # a document date.
+    import asyncio
+    from dataclasses import asdict as _asdict
+
+    from _adk import stages
+    from app.llm.client import StubLlm
+    leaves = [
+        Leaf("L_000001", "paragraph", "Data Governance Policy", "root"),
+        Leaf("L_000002", "paragraph", " April 2025", "root"),
+        Leaf("L_000003", "heading", "1. Purpose", "s1"),
+        Leaf("L_000004", "paragraph", "Effective April 2025 onwards.", "s1"),
+    ]
+    state = {"leaves": [_asdict(l) for l in leaves], "links": [], "actors": {}}
+    r = asyncio.run(stages.classify_rules_stage(state, StubLlm()))
+    cover = [h for h in r["delta"]["cascade"]
+             if h["rule"] == "document_date_on_cover"]
+    assert [h["leaf_id"] for h in cover] == ["L_000002"]
+    assert cover[0]["placeholder"] == "<document_date>"
+
+
+def test_cascade_overrides_llm_keep():
+    # A cascade hit is a rule, not a judgment: the LLM's KEEP cannot veto it.
+    from app.pipeline.rules.engine import CascadeHit
+    leaves = [Leaf("L_000001", "paragraph", " April 2025", "root")]
+    decisions = [Decision("L_000001", "KEEP")]
+    hit = CascadeHit("L_000001", "April 2025", "QUALIFIER_OF_IDENTIFIER",
+                     "document_date_on_cover", "doc date identifies it",
+                     "<document_date>")
+    res = validate_and_assemble(leaves, [], decisions, {}, [hit])
+    assert res.payload and res.payload[0]["after"].strip() == "<document_date>"

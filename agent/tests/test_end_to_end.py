@@ -138,7 +138,7 @@ def test_cascade_hides_decision_number_and_date_with_doc_name():
     ]
     hits = apply_rules(rules, leaves, hidden_rows={"t1r1"}, classifications=classifications)
     assert {h.leaf_id for h in hits} == {"L_000007", "L_000008"}
-    assert {h.placeholder for h in hits} == {"<رقم_القرار>", "<تاريخ_القرار>"}
+    assert {h.placeholder for h in hits} == {"<reference_number>", "<date>"}
 
 
 # ── stage 8: reconciliation by leaf ID — silent loss impossible ──────────────
@@ -170,7 +170,7 @@ def test_full_pipeline_end_to_end():
     leaves = make_leaves()
     actors = merge_actors(SECTION_EXTRACTIONS)
     links = scan(leaves, actors)
-    allowed = {a.placeholder for a in actors.values()} | {"<رقم_القرار>", "<تاريخ_القرار>"}
+    allowed = {a.placeholder for a in actors.values()} | {"<reference_number>", "<date>"}
 
     linked_ids = sorted({l.leaf_id for l in links} | {"L_000007", "L_000008"})
     response = {i: {"decision": "REWRITE", "use": None} for i in linked_ids}
@@ -196,7 +196,7 @@ def test_full_pipeline_end_to_end():
         for p in res.payload}
     assert previews["L_000010"] == "<مسؤول_الاعتماد>"
     assert previews["L_000002"] == "أعدّه: <مسؤول_الاعتماد> — مسؤول الاعتماد"
-    assert previews["L_000007"] == "<رقم_القرار>"
-    assert previews["L_000008"] == "<تاريخ_القرار>"
+    assert previews["L_000007"] == "<reference_number>"
+    assert previews["L_000008"] == "<date>"
     # the SAME person got the SAME placeholder in both places — consistency
     assert "<مسؤول_الاعتماد>" in previews["L_000002"] and "<مسؤول_الاعتماد>" in previews["L_000010"]

@@ -1,18 +1,31 @@
 # Meaning-breakage cascade rules — edited by humans, tested in CI.
-# when_hidden_class: a surface of this class in a table row was decided hidden
+# when_hidden_class: class(es) of a surface in a table row decided hidden
 # same_row_hide:     classes in the SAME row that lose their value and must follow
+# Placeholders are ENGLISH (iron rule: Arabic is the chat language only —
+# run 5 shipped Arabic tags that would have been injected into an EN document).
 rules:
   - name: identifier_orphaned_qualifiers
-    when_hidden_class: INTERNAL_DOC_NAME
+    when_hidden_class: [INTERNAL_DOC_NAME]
     same_row_hide: [INSTANCE_IDENTIFIER, QUALIFIER_OF_IDENTIFIER]
-    reason: "الرقم والتاريخ بلا مرجعهما فقدا قيمتهما"
+    reason: "a number and date without their document lose their meaning"
     placeholders:
-      INSTANCE_IDENTIFIER: "<رقم_القرار>"
-      QUALIFIER_OF_IDENTIFIER: "<تاريخ_القرار>"
+      INSTANCE_IDENTIFIER: "<reference_number>"
+      QUALIFIER_OF_IDENTIFIER: "<date>"
+
+  # Run-5 feedback: approval/tracking rows hide a PERSON or an org unit and
+  # the row's number + date then point straight back at them — but the old
+  # rule only fired on hidden DOCUMENT names (run 5: cascade fired 0x).
+  - name: identity_orphaned_qualifiers
+    when_hidden_class: [PERSON, ORG_OWNER, ORG_UNIT, ORG_EXTERNAL]
+    same_row_hide: [INSTANCE_IDENTIFIER, QUALIFIER_OF_IDENTIFIER]
+    reason: "a number and date qualifying a hidden actor re-identify it"
+    placeholders:
+      INSTANCE_IDENTIFIER: "<reference_number>"
+      QUALIFIER_OF_IDENTIFIER: "<date>"
 
   - name: person_orphaned_contact
-    when_hidden_class: PERSON
+    when_hidden_class: [PERSON]
     same_row_hide: [CONTACT_DETAIL]
-    reason: "بيانات التواصل بلا صاحبها تكشف الهوية"
+    reason: "contact details without their owner still reveal the identity"
     placeholders:
-      CONTACT_DETAIL: "<بيانات_تواصل>"
+      CONTACT_DETAIL: "<contact_details>"

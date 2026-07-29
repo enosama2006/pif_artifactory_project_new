@@ -218,12 +218,37 @@ async def classify_rules_stage(state, llm):
                                         "surface": src["surface"],
                                         "class": it["class"]})
 
+    # WHAT is hidden in each row, by class — run-5: only doc-name rows were
+    # collected, so hiding a person/org in approval rows never cascaded and
+    # their dates/reference numbers survived (cascade fired 0×).
     actors = _actors(state)
-    doc_ids = {a.actor_id for a in actors.values() if a.kind == "INTERNAL_DOC"}
+    kind_to_class = {"PERSON": "PERSON", "ORG_OWNER": "ORG_OWNER",
+                     "ORG_UNIT": "ORG_UNIT", "ORG_EXTERNAL": "ORG_EXTERNAL",
+                     "INTERNAL_DOC": "INTERNAL_DOC_NAME", "SYSTEM": "SYSTEM"}
+    actor_class = {a.actor_id: kind_to_class.get(a.kind, a.kind)
+                   for a in actors.values()}
     leaf_rows = {l.leaf_id: l.row for l in leaves}
-    hidden_rows = {leaf_rows[l.leaf_id] for l in _links(state)
-                   if l.actor_id in doc_ids and leaf_rows.get(l.leaf_id)}
+    hidden_rows: dict[str, set] = {}
+    for l in _links(state):
+        row = leaf_rows.get(l.leaf_id)
+        if row and l.actor_id in actor_class:
+            hidden_rows.setdefault(row, set()).add(actor_class[l.actor_id])
     hits = apply_rules(load_rules(), leaves, hidden_rows, classifications)
+
+    # Owner rule (run-5 feedback): the document's own date is never left
+    # as-is. A leaf that IS one date, outside any table, in the front matter
+    # (before the first heading) is the document's date → <document_date>.
+    from app.pipeline.candidates.sweep import whole_text_is_date
+    for lf in leaves:
+        if lf.kind == "heading":
+            break
+        if lf.row is None and whole_text_is_date(lf.text):
+            hits.append(CascadeHit(
+                leaf_id=lf.leaf_id, surface=lf.text.strip(),
+                klass="QUALIFIER_OF_IDENTIFIER", rule="document_date_on_cover",
+                reason="the document's issue date identifies it",
+                placeholder="<document_date>"))
+
     return {"ok": True,
             "message": f"{len(classifications)} classified; cascade fired {len(hits)}×",
             "delta": {"classifications": classifications,

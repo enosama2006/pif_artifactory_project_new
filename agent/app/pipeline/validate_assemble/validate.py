@@ -87,25 +87,36 @@ def validate_and_assemble(leaves, links, decisions, actors,
     links_by_leaf: dict[str, list] = {}
     for l in links:
         links_by_leaf.setdefault(l.leaf_id, []).append(l)
-    cascade_by_leaf = {c.leaf_id: c for c in cascade_hits}
+    cascade_by_leaf: dict[str, list] = {}
+    for c in cascade_hits:
+        cascade_by_leaf.setdefault(c.leaf_id, []).append(c)
     token_index = _actor_token_index(actors)
 
     pending: list[tuple] = []          # (leaf, payload item)
     for lf in leaves:
         d = dec_by_leaf[lf.leaf_id]
-        if d.decision == "REVIEW":
+        decision = d.decision
+        # A cascade hit is a RULE, not a judgment — the LLM cannot veto it
+        # with KEEP (run-5 feedback: dates/reference numbers must follow
+        # their hidden identity; Groq had kept them). REVIEW still wins:
+        # a human explicitly asked to look.
+        if decision == "KEEP" and lf.leaf_id in cascade_by_leaf:
+            decision = "REWRITE"
+        if decision == "REVIEW":
             res.review_queue.append({"leaf_id": lf.leaf_id, "text": lf.text,
                                      "reason": d.reason})
-        elif d.decision == "REWRITE":
-            if lf.leaf_id in cascade_by_leaf:
-                c = cascade_by_leaf[lf.leaf_id]
-                spans = [{"start": lf.text.find(c.surface),
-                          "end": lf.text.find(c.surface) + len(c.surface),
-                          "replace": c.placeholder}]
-            else:
-                spans = [{"start": l.start, "end": l.end,
-                          "replace": ph_by_actor[l.actor_id]}
-                         for l in links_by_leaf.get(lf.leaf_id, [])]
+        elif decision == "REWRITE":
+            # mention spans and cascade spans combine (a cell can carry an
+            # actor name AND a qualifying date); overlaps defer to the link
+            spans = [{"start": l.start, "end": l.end,
+                      "replace": ph_by_actor[l.actor_id]}
+                     for l in links_by_leaf.get(lf.leaf_id, [])]
+            for c in cascade_by_leaf.get(lf.leaf_id, []):
+                pos = lf.text.find(c.surface)
+                if pos >= 0 and not any(s["start"] < pos + len(c.surface)
+                                        and pos < s["end"] for s in spans):
+                    spans.append({"start": pos, "end": pos + len(c.surface),
+                                  "replace": c.placeholder})
             if spans:
                 after = collapse_duplicate_placeholder(render_preview(lf, spans))
                 pending.append((lf, {"leaf_id": lf.leaf_id, "anchor": lf.anchor,

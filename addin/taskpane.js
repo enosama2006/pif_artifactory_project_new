@@ -13,7 +13,7 @@
  */
 /* global Office, Word, fetch, document */
 
-const UI_VERSION = "0.7.0";        // bump when the pane changes — shown in the header
+const UI_VERSION = "0.7.1";        // bump when the pane changes — shown in the header
 let RUN = null;                    // completed run result
 let SERVER = "http://localhost:8080";
 const STAGE_LABELS = {
@@ -101,23 +101,56 @@ async function anchorRange(start, end) {
   return { anchored, skipped };
 }
 
-/* Auto-clean: remove ALL anz anchors left by earlier runs BEFORE the agent
- * receives the document (run-5 owner rule: "clean before the agent gets it").
- * Content is kept; only the control wrappers go. This removes the whole
- * duplicate-tag failure class — every run anchors fresh from C_00001. */
+/* Auto-clean BEFORE the agent receives the document (owner rule): remove
+ * stale anz anchors AND unwrap every other content control (built-in cover
+ * dropdowns like "Policy Owner Division", legacy sdt boxes) keeping their
+ * text — those boxes refused anchoring, hid their text from search, and
+ * blocked replacement (run-5/6 finding: cover "Chief of Staff"). After
+ * unwrapping, every paragraph is plain text: anchorable, findable,
+ * replaceable without constraints. */
 async function autoCleanAnchors() {
-  let removed = 0;
-  await Word.run(async (ctx) => {
-    const ccs = ctx.document.contentControls;
-    ccs.load("items/tag");
-    await ctx.sync();
-    const stale = ccs.items.filter(c => (c.tag || "").startsWith("anz:"));
-    stale.forEach(c => c.delete(true));   // true = keep the content
-    removed = stale.length;
-    await ctx.sync();
-  });
+  let anz = 0, boxes = 0, failed = 0;
+  const count = (c) => ((c.tag || "").startsWith("anz:") ? anz++ : boxes++);
+  try {
+    await Word.run(async (ctx) => {
+      const ccs = ctx.document.contentControls;
+      ccs.load("items/tag,items/title");
+      await ctx.sync();
+      for (const c of ccs.items) {
+        try { c.cannotDelete = false; } catch { /* not lockable on this type */ }
+        count(c);
+        c.delete(true);                 // true = keep the content as plain text
+      }
+      await ctx.sync();
+    });
+  } catch (batchErr) {
+    // one refusing control must not keep the rest wrapped — retry one by one
+    op("clean", `batch unwrap failed (${fmtErr(batchErr)}) — retrying one by one…`);
+    anz = 0; boxes = 0;
+    let guard = 600;
+    while (guard-- > 0) {
+      let remaining = 0, ok = false;
+      try {
+        await Word.run(async (ctx) => {
+          const ccs = ctx.document.contentControls;
+          ccs.load("items/tag,items/title");
+          await ctx.sync();
+          remaining = ccs.items.length;
+          if (!remaining) return;
+          const c = ccs.items[0];
+          try { c.cannotDelete = false; } catch { /* ignore */ }
+          c.delete(true);
+          await ctx.sync();
+          count(c);
+          ok = true;
+        });
+      } catch { /* fall through */ }
+      if (!remaining) break;
+      if (!ok) { failed = remaining; break; }
+    }
+  }
   anchorSeq = 0;
-  return removed;
+  return { anz, boxes, failed };
 }
 
 async function anchorDocument() {
@@ -198,10 +231,10 @@ async function runPipeline() {
     // Owner rule (run 5): the document must be CLEAN before the agent
     // receives it — stale anchors from earlier runs are removed automatically.
     try {
-      const removed = await autoCleanAnchors();
-      op("clean", removed
-        ? `${removed} stale anchor(s) from earlier runs removed automatically — document is clean.`
-        : "no stale anchors — document already clean.");
+      const c = await autoCleanAnchors();
+      op("clean", `${c.anz} stale anchor(s) removed, ${c.boxes} control box(es) unwrapped ` +
+         `(text kept)` + (c.failed ? `, ${c.failed} control(s) refused — their text may resist apply` : "") +
+         ` — document is clean before the agent receives it.`);
     } catch (cleanErr) {
       op("clean", "WARNING: auto-clean failed (" + fmtErr(cleanErr) +
          ") — continuing; anchor numbering will avoid collisions.");
@@ -248,6 +281,7 @@ async function runPipeline() {
     if (rec.status === "error") throw new Error(rec.error || "run failed");
 
     RUN = { run_id: rec.run_id, llm_mode: rec.llm_mode, ...rec.result };
+    absorbReviewItems();     // REVIEW leaves join the list, in document order
     indexSpans();
     $("diagBtn").disabled = false;
     log(`Run ${rec.run_id} completed (mode=${rec.llm_mode}).`);
@@ -323,7 +357,29 @@ async function locateActor(actorId) {
   } catch (e) { log("ERROR locating: " + fmtErr(e)); }
 }
 
+/* REVIEW leaves become list entries too (owner rule: the list follows the
+ * PAPER ORDER and a REVIEW item must be editable in place). Default: the
+ * original text stands; Apply All skips it until the human edits it. */
+function absorbReviewItems() {
+  const leafById = {};
+  (RUN.leaves || []).forEach(l => { leafById[l.leaf_id] = l; });
+  const have = new Set((RUN.payload || []).map(p => p.leaf_id));
+  (RUN.review_queue || []).forEach(r => {
+    if (have.has(r.leaf_id)) return;
+    const lf = leafById[r.leaf_id] || {};
+    RUN.payload.push({ leaf_id: r.leaf_id, anchor: lf.anchor || null,
+                       row: lf.row || null, column: lf.col || null,
+                       before: r.text, after: r.text, spans: [],
+                       review: true, reviewReason: r.reason });
+    have.add(r.leaf_id);
+  });
+  // leaf ids are zero-padded (L_000042) → lexicographic == document order
+  RUN.payload.sort((a, b) =>
+    a.leaf_id < b.leaf_id ? -1 : a.leaf_id > b.leaf_id ? 1 : 0);
+}
+
 function recomputeAfter(p) {
+  if (p.review && !p.edited) { p.after = p.before; p.empty = false; return; }
   if (p.edited) { p.empty = false; return; }   // human wording wins over recompute
   let text = p.before;
   const active = (p.spans || []).filter(s =>
@@ -388,16 +444,12 @@ function renderResults() {
   show("secReview");
 
   // A table ROW is one connected block (owner's rule): its cells render and
-  // apply together, never as scattered independent cards.
+  // apply together. The whole list follows the PAPER ORDER (owner rule) —
+  // payload is sorted by leaf id, so iterating it IS document order; a row
+  // card sits where its first cell sits. REVIEW items render inline with a
+  // badge: original text stands until the human edits them.
   const pl = (RUN.payload || []).filter(p => !p.empty);
   $("changeCount").textContent = pl.length;
-  const rows = {};                       // row key -> [payload indices]
-  const singles = [];
-  pl.forEach(p => {
-    const i = RUN.payload.indexOf(p);
-    if (p.row) (rows[p.row] = rows[p.row] || []).push(i);
-    else singles.push(i);
-  });
 
   const cellHtml = (i) => {
     const p = RUN.payload[i];
@@ -407,7 +459,7 @@ function renderResults() {
       `<td><button class="ghost small" onclick="editItem(${i})">✎</button></td></tr>`;
   };
 
-  const rowCards = Object.entries(rows).map(([rk, idxs]) =>
+  const rowCard = (rk, idxs) =>
     `<div class="card" id="row_${esc(rk)}">` +
     `<span class="tag">table row ${esc(rk)}</span>` +
     `<table style="border:0">${idxs.map(cellHtml).join("")}</table>` +
@@ -415,23 +467,42 @@ function renderResults() {
     `<button class="ghost small" onclick='applyRow(${JSON.stringify(idxs)})'>✓ Apply row</button>` +
     `<button class="ghost small" onclick="goTo(${idxs[0]})">Locate</button>` +
     `<button class="ghost small" onclick='rejectRow(${JSON.stringify(idxs)}, "${esc(rk)}")'>✗ Reject row</button>` +
-    `</div></div>`);
+    `</div></div>`;
 
-  const singleCards = singles.map(i => {
+  const singleCard = (i) => {
     const p = RUN.payload[i];
-    return `<div class="card" id="chg_${i}">` +
-    `<div class="before">${esc(p.before)}</div>` +
-    `<div class="after" id="after_${i}">${esc(p.after)}</div>` +
+    const review = p.review && !p.edited;
+    return `<div class="card${p.review ? " review" : ""}" id="chg_${i}">` +
+    (p.review ? `<span class="tag" style="color:var(--warn)">REVIEW — ${esc(p.reviewReason || "")}</span>` : "") +
+    `<div class="before"${review ? ' style="text-decoration:none"' : ""}>${esc(p.before)}</div>` +
+    (review ? `<div class="muted" id="after_${i}">unchanged until you edit it</div>`
+            : `<div class="after" id="after_${i}">${esc(p.after)}</div>`) +
     `<div class="actions">` +
-    `<button class="ghost small" onclick="applyOne(${i})">✓ Apply</button>` +
+    (review ? "" : `<button class="ghost small" onclick="applyOne(${i})">✓ Apply</button>`) +
     `<button class="ghost small" onclick="editItem(${i})">✎ Edit</button>` +
     `<button class="ghost small" onclick="goTo(${i})">Locate</button>` +
-    `<button class="ghost small" onclick="reject(${i})">✗ Reject</button>` +
+    (review ? "" : `<button class="ghost small" onclick="reject(${i})">✗ Reject</button>`) +
     `<span class="anchor" style="margin-inline-start:auto">${esc(p.anchor || p.leaf_id)}</span>` +
     `</div></div>`;
+  };
+
+  const parts = [];
+  const doneRows = new Set();
+  pl.forEach(p => {
+    const i = RUN.payload.indexOf(p);
+    if (p.row) {
+      if (doneRows.has(p.row)) return;
+      doneRows.add(p.row);
+      const idxs = RUN.payload
+        .map((q, j) => (!q.empty && q.row === p.row ? j : -1))
+        .filter(j => j >= 0);
+      parts.push(rowCard(p.row, idxs));
+    } else {
+      parts.push(singleCard(i));
+    }
   });
 
-  $("changes").innerHTML = (singleCards.join("") + rowCards.join("")) ||
+  $("changes").innerHTML = parts.join("") ||
     "<div class='muted'>No changes proposed.</div>";
   show("secChanges");
 }
@@ -453,26 +524,41 @@ async function withCc(anchor, fn) {
   });
 }
 
-/* Text-search fallback for leaves without an anchor (Word refuses to wrap
- * built-in cover/title controls). Replaces ONLY on an exact, UNIQUE match —
- * zero or multiple matches abort, because guessing would corrupt text. */
-async function replaceByUniqueText(p) {
+/* Which occurrence of this exact text does payload entry i represent, among
+ * the ANCHORLESS entries sharing it? (Run-6 finding: two cover "Chief of
+ * Staff" cards both jumped to the first search hit.) */
+function anchorlessOrdinal(i) {
+  const p = RUN.payload[i];
+  let nth = 0, total = 0;
+  (RUN.payload || []).forEach((q, j) => {
+    if (!q.anchor && q.before === p.before) { total++; if (j < i) nth++; }
+  });
+  return { nth, total };
+}
+
+/* Text-search fallback for leaves without an anchor (Word refused to wrap
+ * them). Deterministic occurrence matching: replace hit #nth only when the
+ * number of matches equals the number of same-text anchorless leaves —
+ * any mismatch aborts, because guessing would corrupt text. */
+async function replaceByTextOccurrence(p, nth, total) {
   const needle = p.before || "";
-  if (!needle) throw new Error("empty source text");
+  if (!needle.trim()) throw new Error("empty source text");
   if (needle.length > 250)
     throw new Error(`text too long for the search fallback (${needle.length} chars)`);
   await Word.run(async (ctx) => {
     try { ctx.document.changeTrackingMode = "TrackAll"; } catch { /* WordApi<1.4 */ }
-    const found = ctx.document.body.search(needle, { matchCase: true });
+    const found = ctx.document.body.search(needle.trim(), { matchCase: true });
     found.load("items");
     await ctx.sync();
-    if (found.items.length === 0) throw new Error("text not found in body");
-    if (found.items.length > 1)
-      throw new Error(`ambiguous — ${found.items.length} matches, skipped for safety`);
-    found.items[0].insertText(p.after, "Replace");
+    if (found.items.length === 0)
+      throw new Error("text not found in body (floating text box or header/footer?)");
+    if (found.items.length !== total)
+      throw new Error(`ambiguous — ${found.items.length} match(es) for ${total} ` +
+                      `pending instance(s), skipped for safety`);
+    found.items[nth].insertText(p.after, "Replace");
     await ctx.sync();
   });
-  return "unique text match";
+  return `text match ${nth + 1}/${total}`;
 }
 
 /* Every apply is LOGGED with its outcome — run-5 finding: replacements were
@@ -480,6 +566,10 @@ async function replaceByUniqueText(p) {
 async function applyOne(i) {
   const p = RUN.payload[i];
   const id = p.leaf_id + (p.anchor ? ` (${p.anchor})` : " (no anchor)");
+  if (p.review && !p.edited) {
+    op("apply", `SKIP ${id} — REVIEW item, original text stands (edit it to include)`);
+    return false;
+  }
   let via = null;
   const errs = [];
   if (p.anchor) {
@@ -488,11 +578,13 @@ async function applyOne(i) {
       via = "anchor";
     } catch (e) { errs.push("anchor: " + fmtErr(e)); }
   } else {
-    errs.push("no anchor (Word refused to wrap this paragraph — cover/title control)");
+    errs.push("no anchor (Word refused to wrap this paragraph)");
   }
   if (!via) {
-    try { via = await replaceByUniqueText(p); }
-    catch (e) { errs.push("text fallback: " + fmtErr(e)); }
+    try {
+      const { nth, total } = anchorlessOrdinal(i);
+      via = await replaceByTextOccurrence(p, nth, total);
+    } catch (e) { errs.push("text fallback: " + fmtErr(e)); }
   }
   if (via) {
     op("apply", `OK ${id} via ${via}`);
@@ -511,22 +603,26 @@ async function applyOne(i) {
 }
 
 async function applyAll() {
-  let ok = 0;
+  let ok = 0, review = 0;
   const failed = [];
   for (let i = 0; i < (RUN.payload || []).length; i++) {
     const p = RUN.payload[i];
     if (p.empty || p.rejected || p.applied) continue;
-    (await applyOne(i)) ? ok++ : failed.push(p.leaf_id);
+    if (p.review && !p.edited) { review++; continue; }   // owner rule: REVIEW
+    (await applyOne(i)) ? ok++ : failed.push(p.leaf_id); // never auto-applies
   }
   op("apply", `SUMMARY: ${ok} applied, ${failed.length} failed` +
       (failed.length ? ` — ${failed.join(", ")}` : "") +
+      (review ? `; ${review} REVIEW item(s) untouched (edit them to include)` : "") +
       ". Review them in Word's Review tab (tracked changes).");
 }
 
 async function goTo(i) {
   const p = RUN.payload[i];
-  try { await selectByAnchorOrText(p.anchor, p.before); }
-  catch (e) { log("ERROR locating: " + fmtErr(e)); }
+  try {
+    const { nth } = anchorlessOrdinal(i);   // run-6: pick THIS instance,
+    await selectByAnchorOrText(p.anchor, p.before, p.anchor ? 0 : nth);
+  } catch (e) { log("ERROR locating: " + fmtErr(e)); }
 }
 
 function reject(i) {

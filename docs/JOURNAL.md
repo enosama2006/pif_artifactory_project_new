@@ -110,6 +110,37 @@ zero kind-fallback placeholders (`<owner_organization>`,
 `<chief_data_officer>`, …), AIAA restored as its own actor, Records
 duplicates merged.
 
+## Post-run-5 owner feedback (2026-07-29, before run 6)
+Owner tested v0.7.0 partially and reported with screenshots:
+(1) Locate could not reach the cover "Chief of Staff" — both cover cards
+jumped to the same first hit; the cover text lives inside a BUILT-IN
+DROPDOWN CONTROL ("Policy Owner Division"), which refuses anchoring and
+constrains search/replace. Owner rule: unwrap such boxes and restore plain
+text BEFORE the agent receives the document. (2) The changes list must
+follow the PAPER ORDER, and REVIEW items must appear inline, editable, with
+the original text standing — never auto-applied while REVIEW. (3) "April
+2025" (the document's own date) was left as-is; ALL dates must be treated
+per their context.
+**Deep finding while fixing (3):** cascade fired 0× in run 5 — the rules
+only triggered on hidden DOCUMENT names, so approval/tracking rows that hid
+a person/org kept their dates and reference numbers; "92/1445" and
+"Y24M06D02" were never even swept as candidates; and the YAML placeholders
+were ARABIC (`<رقم_القرار>`) — they would have been injected into an
+English document (iron-rule violation).
+**Fixed (agent):** class-aware hidden rows + `identity_orphaned_qualifiers`
+rule (hidden PERSON/ORG → same-row dates/refs follow); English cascade
+placeholders (`<date>`, `<reference_number>`, `<contact_details>`);
+reference-code sweep patterns; `document_date_on_cover` rule (a leaf that
+IS a date, before the first heading → `<document_date>`); cascade is a RULE
+— the LLM's KEEP cannot veto it (REVIEW still can); multiple cascade hits
+per leaf now combine with mention spans.
+**Fixed (add-in v0.7.1):** auto-clean now also UNWRAPS every content
+control (text kept) so cover paragraphs become anchorable and findable;
+changes list rendered in document order with REVIEW cards inline (badge +
+reason, Edit/Locate only, excluded from Apply All until edited);
+occurrence-exact text fallback (replace hit #n of m, abort on mismatch)
+for both Locate and apply.
+
 ## How to continue
 Next diagnostics paste → compare against Run 5: dictionary should look like
 the replay above (no `<organisational_unit_N>`, no `<person_N>`); REVIEW
