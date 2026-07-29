@@ -141,6 +141,41 @@ reason, Edit/Locate only, excluded from Apply All until edited);
 occurrence-exact text fallback (replace hit #n of m, abort on mismatch)
 for both Locate and apply.
 
+## Run 6 — `caf22833be79` (2026-07-29)
+The fix packages held: portrait produced a correct document understanding
+(owner, function, 12 key actors) and visibly improved placeholders
+(`<enterprise_sponsor>`, `<technology_department>`, `<data_leadership_role>`);
+cascade fired 13× (all approval/tracking dates and reference numbers masked,
+cover `<document_date>` ×2); only 1 REVIEW (legit: missed 'BR'); peak
+parallelism 6 proven by the event log; apply/locate logging worked exactly
+as designed (it reported "0 matches" honestly).
+**Found:** (1) cover leaves duplicated (two " April 2025" cards): the cover
+text box exists twice in OOXML — mc:Choice + mc:Fallback of the same
+mc:AlternateContent, and the parser walked both; (2) the cover date lives in
+a FLOATING TEXT BOX — Word's own navigation shows "Textbox: April 2025" —
+unreachable by body.search, hence locate/apply failed with 0 matches;
+(3) actor fragmentation is order-dependent: Board/DASC/Digital & Technology/
+Cybersecurity each split into _2/_3 actors because a late variant union
+never re-checks collisions across actors, "(Board)" parentheticals broke
+name keys, and the run-5 identity gate blocked all-function shared variants
+('Digital & Technology', 'D&T'); (4) `<of_authority>` husk — identity
+stripping left leading glue; (5) owner asked for a way to audit the parser's
+extraction without spending a run.
+**Fixed:** parser skips mc:Fallback subtrees (one copy per text box);
+add-in v0.7.2 reaches floating text boxes via the Shapes API as a last
+resort for BOTH locate and apply (logged); `_key` strips trailing
+parentheticals; final `_consolidate` pass merges actors sharing an
+identity-bearing or ≥2-word variant key regardless of insertion order;
+deterministic abbreviation-table pairs ("D&T | Digital & Technology") link
+actors the LLM split across chunks; compact ALL-CAPS acronyms ('D&T') count
+as identity; the actor's own full name survives variant trimming (no more
+"<governing_board> of Directors"); placeholders never start/end with glue
+('delegation' added to FUNCTION_TOKENS → `<delegation_of_authority>`);
+NEW `POST /parse` + "🔍 Parse check" button — ingest-only dry run listing
+kinds, duplicate texts and full leaves, zero LLM cost.
+**Replay proof:** run-6 actors through the new merge → 29 actors down to 24,
+zero _2/_3 duplicates, full names in variants.
+
 ## How to continue
 Next diagnostics paste → compare against Run 5: dictionary should look like
 the replay above (no `<organisational_unit_N>`, no `<person_N>`); REVIEW

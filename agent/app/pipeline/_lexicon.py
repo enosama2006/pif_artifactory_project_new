@@ -58,5 +58,5 @@ FUNCTION_TOKENS = {
     "institution", "institutions", "regulator", "regulators", "agency",
     "agencies", "authority", "authorities", "director", "directors",
     "president", "deputy", "vice", "manager", "managers", "function",
-    "functions",
+    "functions", "delegation", "delegations",
 }

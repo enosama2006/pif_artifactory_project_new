@@ -78,3 +78,15 @@ def test_api_run_returns_anchored_payload():
     assert iv["ok"] is True
     for p in r["result"]["payload"]:
         assert "after" in p and "before" in p and "anchor" in p
+
+
+def test_parse_endpoint_returns_leaves():
+    from fastapi.testclient import TestClient
+
+    from app.api.routes import app
+    client = TestClient(app)
+    r = client.post("/parse", content=PKG.encode("utf-8"),
+                    headers={"Content-Type": "application/xml"}).json()
+    assert r["ok"] is True
+    assert r["leaf_count"] == len(r["leaves"]) > 0
+    assert sum(r["kinds"].values()) == r["leaf_count"]

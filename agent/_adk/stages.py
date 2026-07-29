@@ -172,7 +172,12 @@ async def inventory_stage(state, llm):
         return {"ok": False,
                 "message": f"inventory failed on all {failed} chunk(s) — aborting"}
 
-    actors = merge_actors(extractions, portrait=portrait)
+    # deterministic (acronym, expansion) pairs from the abbreviations table
+    # consolidate actors the LLM extracted separately (run 6: D&T vs
+    # Digital & Technology got _2/_3 placeholders)
+    from app.pipeline.inventory.merge import abbreviation_pairs
+    actors = merge_actors(extractions, portrait=portrait,
+                          abbrev_pairs=abbreviation_pairs(leaves))
     msg = (f"{len(actors)} actors from {len(chunks) - failed}/{len(chunks)} chunk(s)"
            f" (peak parallelism {peak})"
            + (f" ({failed} chunk(s) FAILED — coverage reduced, check review queue)"

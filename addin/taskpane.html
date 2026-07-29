@@ -112,6 +112,7 @@
     <button id="runBtn" class="primary" onclick="runPipeline()">▶ Run anonymization</button>
     <div class="toolbar">
       <button id="diagBtn" class="ghost" onclick="copyDiagnostics()" disabled>📋 Copy diagnostics</button>
+      <button class="ghost" onclick="parseCheck()" title="Ingest-only dry run: audit what the parser extracts, no LLM">🔍 Parse check</button>
       <button class="ghost" onclick="removeAnchors()">Clean anchors</button>
     </div>
     <textarea id="diagBox" style="display:none; width:100%; height:120px; font:11px Consolas,monospace;

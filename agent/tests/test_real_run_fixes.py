@@ -524,3 +524,82 @@ def test_cascade_overrides_llm_keep():
                      "<document_date>")
     res = validate_and_assemble(leaves, [], decisions, {}, [hit])
     assert res.payload and res.payload[0]["after"].strip() == "<document_date>"
+
+
+# ── sixth real run (caf22833be79): textbox duplication + actor consolidation ─
+
+def test_alternate_content_fallback_not_duplicated():
+    # The cover text box exists twice in OOXML (mc:Choice + mc:Fallback);
+    # run 6 extracted " April 2025" as TWO leaves (L_000004 and L_000007).
+    from app.ingestion import ingest
+    W_NS = ('xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" '
+            'xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"')
+    doc = (f'<w:document {W_NS}><w:body>'
+           '<w:p><w:r><mc:AlternateContent>'
+           '<mc:Choice Requires="wps"><w:p><w:r><w:t>April 2025</w:t></w:r></w:p></mc:Choice>'
+           '<mc:Fallback><w:p><w:r><w:t>April 2025</w:t></w:r></w:p></mc:Fallback>'
+           '</mc:AlternateContent></w:r></w:p>'
+           '<w:p><w:r><w:t>Body paragraph.</w:t></w:r></w:p>'
+           '</w:body></w:document>')
+    usd = ingest(doc.encode(), "ooxml")
+    texts = [l.text.strip() for l in usd.leaves]
+    assert texts.count("April 2025") == 1
+    assert "Body paragraph." in texts
+
+
+def test_consolidation_unifies_late_shared_variants():
+    # Run 6: "Board of Directors (Board)" and "Board of Directors" became
+    # <governing_board> and <governing_board_2> — insertion order must not
+    # decide identity; a trailing parenthetical is surface, not identity.
+    from app.pipeline.inventory import merge_actors
+    actors = merge_actors([[
+        {"name": "Board of Directors (Board)", "kind": "ORG_UNIT",
+         "role": "governing board", "variants": ["Board"]},
+    ], [
+        {"name": "Board of Directors", "kind": "ORG_UNIT",
+         "role": "governing board", "variants": ["BoD", "Board of Directors"]},
+    ]])
+    assert len(actors) == 1
+    a = next(iter(actors.values()))
+    assert "Board of Directors" in a.variants     # full name survives trimming
+
+
+def test_abbreviation_table_pair_links_split_actors():
+    # Run 6: the LLM extracted 'D&T' and 'Digital & Technology' as separate
+    # actors (<technology_department> and _3); the appendix row
+    # "D&T | Digital & Technology" links them deterministically.
+    from app.pipeline.inventory import merge_actors
+    from app.pipeline.inventory.merge import abbreviation_pairs
+    leaves = [
+        Leaf("L_000001", "table_cell", "D&T", "s58", row="t4r10"),
+        Leaf("L_000002", "table_cell", "Digital & Technology", "s58", row="t4r10"),
+        Leaf("L_000003", "table_cell", "Data", "s59", row="t5r3"),
+        Leaf("L_000004", "table_cell",
+             "Data is defined as facts, figures, or information items.",
+             "s59", row="t5r3"),
+    ]
+    pairs = abbreviation_pairs(leaves)
+    assert pairs == [("D&T", "Digital & Technology")]   # definitions row excluded
+    actors = merge_actors([[
+        {"name": "Digital & Technology Department", "kind": "ORG_UNIT",
+         "role": "technology department", "variants": ["Digital & Technology"]},
+    ], [
+        {"name": "D&T", "kind": "ORG_UNIT",
+         "role": "technology department", "variants": ["D&T"]},
+    ]], abbrev_pairs=pairs)
+    assert len(actors) == 1
+    a = next(iter(actors.values()))
+    assert a.placeholder == "<technology_department>"
+    assert {"D&T", "Digital & Technology"} <= set(a.variants)
+
+
+def test_placeholder_never_edged_by_glue():
+    # Run 6: BDoA got <of_authority> — identity stripping left leading glue.
+    from app.pipeline.inventory import merge_actors
+    actors = merge_actors([[
+        {"name": "Board Delegation of Authority (BDoA)", "kind": "INTERNAL_DOC",
+         "role": "delegation of authority",
+         "variants": ["BDoA", "Board Delegation of Authority"]},
+    ]])
+    a = next(iter(actors.values()))
+    assert a.placeholder == "<delegation_of_authority>"

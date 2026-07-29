@@ -125,6 +125,34 @@ async def _execute(run_id: str, doc_path: str) -> None:
         pass
 
 
+@app.post("/parse")
+async def parse_only(request: Request):
+    """Ingest-only dry run: returns the parser's leaves so extraction can be
+    audited against the document BEFORE spending any LLM call (owner ask,
+    run 6: 'is the problem in the document or in the extraction?')."""
+    raw = await request.body()
+    if not raw:
+        return {"ok": False, "error": "empty body — send the document bytes"}
+    tmp = tempfile.NamedTemporaryFile(prefix="anz_parse_", delete=False)
+    tmp.write(raw)
+    tmp.close()
+    from _adk import stages as S
+    state: dict = {"input_path": tmp.name}
+    try:
+        result = await S.ingest_stage(state, None)
+    finally:
+        Path(tmp.name).unlink(missing_ok=True)
+    if not result.get("ok", True):
+        return {"ok": False, "error": result.get("message")}
+    leaves = result["delta"]["leaves"]
+    kinds: dict[str, int] = {}
+    for lf in leaves:
+        kinds[lf["kind"]] = kinds.get(lf["kind"], 0) + 1
+    return {"ok": True, "message": result.get("message", ""),
+            "leaf_count": result["delta"]["leaf_count"],
+            "kinds": kinds, "leaves": leaves}
+
+
 @app.post("/runs")
 async def create_run(request: Request, wait: int = 0):
     raw = await request.body()

@@ -60,13 +60,21 @@ class OoxmlBlock:
         n = 0
         section = "root"
         sec_idx = 0
+        MC = "{http://schemas.openxmlformats.org/markup-compatibility/2006}"
         for origin, xml_bytes in sorted(parts, key=lambda p: p[0] != "body"):
             root = ET.fromstring(xml_bytes)
             # ElementTree has no parent pointers — precompute per-part maps:
             table_ps = {id(p) for tbl in root.iter(f"{W}tbl") for p in tbl.iter(f"{W}p")}
             anchors = _anchor_map(root)
+            # mc:AlternateContent carries the SAME text box twice (modern
+            # mc:Choice + legacy mc:Fallback) — walking both duplicated every
+            # cover leaf (run 6: two " April 2025" cards, L_000004/L_000007).
+            fallback_els = {id(x) for fb in root.iter(f"{MC}Fallback")
+                            for x in fb.iter()}
             done_tbls: set[int] = set()  # nested tables are handled by their outer table
             for el in root.iter():
+                if id(el) in fallback_els:
+                    continue
                 if el.tag == f"{W}tbl":
                     if id(el) in done_tbls:
                         continue

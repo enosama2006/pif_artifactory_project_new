@@ -62,8 +62,12 @@ _PARENTHETICAL = re.compile(r"^(.*?[\w؀-ۿ])\s*\(([^()]{1,60})\)\s*$")
 
 def _key(name: str) -> str:
     # "&" folds to "and": "Records & Administration…" and "Records and
-    # Administration…" are the same department (run-5: two actors, two tags)
-    text = normalize(name).replace("&", " and ")
+    # Administration…" are the same department (run-5: two actors, two tags).
+    # A trailing parenthetical is part of the SURFACE, not the identity:
+    # "Board of Directors (Board)" and "Board of Directors" must collide
+    # (run-6: they became <governing_board> and <governing_board_2>).
+    text = re.sub(r"\s*\([^()]{1,60}\)\s*$", " ", name)
+    text = normalize(text).replace("&", " and ")
     text = re.sub(r"\s+", " ", text).strip()
     return _ARTICLES.sub("", text).lower()
 
@@ -75,9 +79,15 @@ def _tokens(text: str) -> list[str]:
 def _has_identity(text: str) -> bool:
     """True if the text carries at least one identity token (not generic,
     not function vocabulary) — 'DASC', 'CoS DH', 'the Fund' do; a purely
-    descriptive phrase like 'Advanced Analytics & AI' does not."""
-    return any(t.lower() not in GENERIC_TOKENS and t.lower() not in FUNCTION_TOKENS
-               and len(t) >= 2 for t in _tokens(text))
+    descriptive phrase like 'Advanced Analytics & AI' does not. A compact
+    ALL-CAPS acronym counts even when its letters are glued by symbols
+    ('D&T' tokenizes to two 1-letter tokens but IS an identity, run 6)."""
+    if any(t.lower() not in GENERIC_TOKENS and t.lower() not in FUNCTION_TOKENS
+           and len(t) >= 2 for t in _tokens(text)):
+        return True
+    compact = re.sub(r"[^A-Za-z]", "", text)
+    return (2 <= len(compact) <= 6 and compact.isupper()
+            and " " not in text.strip())
 
 
 def _split_parenthetical(variants: set[str]) -> set[str]:
@@ -92,8 +102,34 @@ def _split_parenthetical(variants: set[str]) -> set[str]:
     return out
 
 
+def abbreviation_pairs(leaves) -> list[tuple[str, str]]:
+    """Deterministic (acronym, expansion) pairs from 2-cell table rows —
+    the abbreviations appendix IS structure, not judgment. Run 6: the LLM
+    extracted 'D&T' and 'Digital & Technology' as two actors in different
+    chunks; the appendix row that links them was on the page all along."""
+    rows: dict[str, list] = {}
+    for lf in leaves:
+        if lf.kind == "table_cell" and lf.row:
+            rows.setdefault(lf.row, []).append(lf)
+    pairs = []
+    for cells in rows.values():
+        if len(cells) != 2:
+            continue
+        a, b = cells[0].text.strip(), cells[1].text.strip()
+        compact = re.sub(r"[^A-Za-z]", "", a)
+        # an ACRONYM row, not a definitions row: ≥2 capitals in the short
+        # cell and a short expansion (a Terms/Definition row like
+        # "Data | Data is defined as facts…" must not qualify)
+        if (2 <= len(a) <= 8 and " " not in a and compact
+                and sum(c.isupper() for c in compact) >= 2
+                and len(a) < len(b) <= 60):
+            pairs.append((a, b))
+    return pairs
+
+
 def merge_actors(section_extractions: list[list[dict]],
-                 portrait: dict | None = None) -> dict[str, Actor]:
+                 portrait: dict | None = None,
+                 abbrev_pairs: list[tuple[str, str]] | None = None) -> dict[str, Actor]:
     """[[{name, kind, role, variants}, …] per section] → {actor_id: Actor}.
 
     `portrait` (optional, from the portrait stage) supplies document-level
@@ -132,16 +168,25 @@ def merge_actors(section_extractions: list[list[dict]],
                 add_role(actor, str(raw.get("role", "")).strip())
                 merged[_key(name)] = actor
 
-    out: dict[str, Actor] = {}
+    kept: list[Actor] = []
     seen: set[int] = set()
     for a in merged.values():
         if id(a) in seen:
             continue
         seen.add(id(a))
-        a.variants = _trim_wrapping_variants(a.variants)
+        a.variants = _trim_wrapping_variants(a.variants, keep_key=_key(a.name))
         a.variants = _drop_polluted_variants(a)
         if _is_generic(a):
             continue
+        kept.append(a)
+
+    # Final consolidation — insertion order must not decide identity (run 6:
+    # Board/DASC/D&T/Cybersecurity each split into _2/_3 actors because a
+    # late variant union never re-checked collisions across actors).
+    _consolidate(kept, abbrev_pairs or [], role_counts)
+
+    out: dict[str, Actor] = {}
+    for a in kept:
         a.actor_id = f"ACT_{len(out) + 1:03d}"
         out[a.actor_id] = a
 
@@ -209,10 +254,74 @@ def _mint_placeholder(a: Actor, ranked_roles: list[str],
             # Intelligence"). Short restatements are fine ("technology
             # department"); a PERSON title restated IS the function.
             continue
+        # never start/end the tag with glue ("<of_authority>", run 6)
+        while toks and toks[0].lower() in _GLUE:
+            toks.pop(0)
+        while toks and toks[-1].lower() in _GLUE:
+            toks.pop()
         text = re.sub(r"[^\w؀-ۿ]+", "_", "_".join(toks)).strip("_")
         if text:
             return f"<{text}>"
     return f"<{_KIND_FALLBACK.get(a.kind, 'actor')}>"
+
+
+def _merge_keys(a: Actor) -> set[str]:
+    """Keys an actor may consolidate on: its name key plus every variant
+    that carries identity OR at least two substantive words — a single
+    shared generic word ('Board', 'Department') must never fuse actors."""
+    ks = {_key(a.name)}
+    for v in a.variants:
+        toks = [t for t in _tokens(v) if t.lower() not in _GLUE]
+        if _has_identity(v) or len(toks) >= 2:
+            ks.add(_key(v))
+    return {k for k in ks if k}
+
+
+def _absorb(target: Actor, other: Actor,
+            role_counts: dict[int, dict[str, int]]) -> None:
+    target.variants = sorted(set(target.variants) | set(other.variants))
+    tc = role_counts.setdefault(id(target), {})
+    for role, n in role_counts.get(id(other), {}).items():
+        tc[role] = tc.get(role, 0) + n
+    for r in other.roles:
+        if r not in target.roles:
+            target.roles.append(r)
+
+
+def _consolidate(actors: list[Actor], pairs: list[tuple[str, str]],
+                 role_counts: dict[int, dict[str, int]]) -> None:
+    """Merge actors that share a consolidation key, then apply the
+    deterministic abbreviation-table pairs. First-seen actor survives."""
+    def merge_pass() -> bool:
+        for i in range(len(actors)):
+            ki = _merge_keys(actors[i])
+            for j in range(i + 1, len(actors)):
+                if ki & _merge_keys(actors[j]):
+                    _absorb(actors[i], actors[j], role_counts)
+                    del actors[j]
+                    return True
+        return False
+
+    while merge_pass():
+        pass
+
+    def owner(text: str):
+        k = _key(text)
+        for a in actors:
+            if k == _key(a.name) or k in {_key(v) for v in a.variants}:
+                return a
+        return None
+
+    for acro, expansion in pairs:
+        a, b = owner(acro), owner(expansion)
+        if a is not None and b is not None and a is not b:
+            survivor, gone = (a, b) if actors.index(a) < actors.index(b) else (b, a)
+            _absorb(survivor, gone, role_counts)
+            actors.remove(gone)
+        elif a is not None and b is None:
+            a.variants = sorted(set(a.variants) | {expansion})
+        elif b is not None and a is None:
+            b.variants = sorted(set(b.variants) | {acro})
 
 
 def _find_by_variant(merged: dict[str, Actor], variants: list[str]):
@@ -228,14 +337,17 @@ def _find_by_variant(merged: dict[str, Actor], variants: list[str]):
     return None
 
 
-def _trim_wrapping_variants(variants: list[str]) -> list[str]:
+def _trim_wrapping_variants(variants: list[str], keep_key: str = "") -> list[str]:
     """Drop a variant that contains a shorter kept variant as a whole-word
-    substring — the scan will match the core inside it anyway."""
+    substring — the scan will match the core inside it anyway. EXCEPT the
+    actor's own full name (run 6: trimming 'Board of Directors' down to
+    'Board' left '<governing_board> of Directors' after the rewrite)."""
     kept: list[str] = []
     for v in sorted(variants, key=lambda x: len(normalize(x))):
         nv = normalize(v).lower()
-        if any(re.search(rf"(?<![\w؀-ۿ]){re.escape(normalize(k).lower())}(?![\w؀-ۿ])", nv)
-               for k in kept):
+        if _key(v) != keep_key and any(
+                re.search(rf"(?<![\w؀-ۿ]){re.escape(normalize(k).lower())}(?![\w؀-ۿ])", nv)
+                for k in kept):
             continue
         kept.append(v)
     return sorted(kept)

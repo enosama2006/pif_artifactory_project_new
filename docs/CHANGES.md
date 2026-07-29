@@ -11,6 +11,63 @@ Each change-set maps to ONE commit; find its hash with
 
 ---
 
+## Change-set: Run-6 fix package (2026-07-29)
+
+Trigger: run `caf22833be79` — duplicated cover leaves, cover date in a
+floating text box, actor fragmentation (_2/_3), `<of_authority>` husk,
+owner ask for a parser audit path.
+
+### agent/app/ingestion/ooxml/block.py
+- **What:** skip every element inside `mc:Fallback` — mc:AlternateContent
+  carries the same text box twice (modern + legacy copies).
+- **Why:** two " April 2025" leaves (L_000004/L_000007), doubled cover.
+- **Rollback:** remove the `fallback_els` set + the skip; duplicates return.
+
+### agent/app/pipeline/inventory/merge.py
+- **What:** (1) `_key` strips a trailing parenthetical ("Board of Directors
+  (Board)" collides with "Board of Directors"); (2) `_has_identity` counts
+  compact ALL-CAPS acronyms ('D&T'); (3) NEW `_consolidate` pass after
+  cleaning: actors sharing a consolidation key (identity-bearing or ≥2
+  substantive words — never one generic word) merge regardless of insertion
+  order; (4) NEW `abbreviation_pairs(leaves)` — deterministic (acronym,
+  expansion) pairs from 2-cell acronym rows (≥2 capitals, expansion ≤60
+  chars), applied in consolidation; (5) the actor's own name survives
+  `_trim_wrapping_variants` (full "Board of Directors" replaced whole);
+  (6) mint never leaves glue at tag edges.
+- **Why:** run 6 shipped `<governing_board_2>`, `<steering_committee_2>`,
+  `<technology_department_3>`, `<security_department_2>`,
+  '<governing_board> of Directors' partial rewrites, `<of_authority>`.
+- **Rollback:** each is a separate function/block; removing `_consolidate`
+  restores order-dependent fragmentation only.
+
+### agent/app/pipeline/_lexicon.py
+- **What:** += delegation/delegations to FUNCTION_TOKENS.
+
+### agent/_adk/stages.py (inventory)
+- **What:** feeds `abbreviation_pairs(leaves)` into `merge_actors`.
+
+### agent/app/api/routes.py
+- **What:** NEW `POST /parse` — ingest-only dry run returning leaf list +
+  kind counts (no LLM, temp file removed).
+- **Why:** owner: "is the problem in the document or in the extraction?"
+
+### addin/taskpane.js (0.7.1 → 0.7.2) + taskpane.html
+- **What:** (1) `withShapeMatch` — floating-text-box fallback for BOTH
+  locate and apply via the Shapes API (exact-text match, nth occurrence,
+  tracked changes; every attempt logged, unsupported builds fail loudly);
+  (2) search needles trimmed (leading-space " April 2025" broke matching);
+  (3) "🔍 Parse check" button → POST /parse, logs kind counts + duplicated
+  texts, dumps full leaves into the diagnostics box.
+- **Rollback:** withShapeMatch is additive (last resort in the fallback
+  chain); the button is standalone.
+
+### Tests
+- 4 new run-6 tests (fallback dedupe, late-variant consolidation,
+  abbreviation-pair linking, glue-edged placeholder) + /parse endpoint
+  test (62 total).
+
+---
+
 ## Change-set: Post-run-5 owner feedback (2026-07-29)
 
 Trigger: owner screenshots — cover "Chief of Staff" is a built-in dropdown

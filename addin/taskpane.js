@@ -13,7 +13,7 @@
  */
 /* global Office, Word, fetch, document */
 
-const UI_VERSION = "0.7.1";        // bump when the pane changes — shown in the header
+const UI_VERSION = "0.7.2";        // bump when the pane changes — shown in the header
 let RUN = null;                    // completed run result
 let SERVER = "http://localhost:8080";
 const STAGE_LABELS = {
@@ -50,6 +50,43 @@ Office.onReady(() => {
   checkHealth();
   setInterval(checkHealth, 8000);   // live agent status in the header pill
 });
+
+/* Parse check — ingest-only dry run (no LLM): shows what the OOXML parser
+ * extracts so document-vs-extraction questions are answered BEFORE a run
+ * (owner ask, run 6). Duplicate texts are flagged; full leaves land in the
+ * diagnostics box for pasting. */
+async function parseCheck() {
+  SERVER = $("serverUrl").value.replace(/\/+$/, "");
+  try {
+    log("Parse check: extracting OOXML…");
+    let ooxml = "";
+    await Word.run(async (ctx) => {
+      const x = ctx.document.body.getOoxml();
+      await ctx.sync();
+      ooxml = x.value;
+    });
+    const r = await (await fetch(SERVER + "/parse", {
+      method: "POST", headers: { "Content-Type": "application/xml" }, body: ooxml,
+    })).json();
+    if (!r.ok) throw new Error(r.error || "parse failed");
+    op("parse", `${r.leaf_count} leaves — ` +
+       Object.entries(r.kinds).map(([k, n]) => `${k}: ${n}`).join(", "));
+    const seen = {};
+    (r.leaves || []).forEach(l => {
+      const t = (l.text || "").trim();
+      if (t) (seen[t] = seen[t] || []).push(l.leaf_id);
+    });
+    const dups = Object.entries(seen).filter(([, ids]) => ids.length > 1);
+    op("parse", dups.length
+      ? `${dups.length} duplicated text(s): ` + dups.slice(0, 8)
+          .map(([t, ids]) => `"${t.slice(0, 30)}" ×${ids.length} (${ids.join(",")})`).join("; ")
+      : "no duplicated texts — extraction is clean.");
+    const box = $("diagBox");
+    box.style.display = "block";
+    box.value = "=== PARSE CHECK ===\n" + JSON.stringify(r, null, 1);
+    log("Full parsed leaves are in the box below — copy/paste them for review.");
+  } catch (e) { log("ERROR parse check: " + fmtErr(e)); }
+}
 
 async function checkHealth(verbose = false) {
   SERVER = $("serverUrl").value.replace(/\/+$/, "");
@@ -322,6 +359,44 @@ function indexSpans() {
 /* Robust select: anchor tag first; if the control is gone or Word refused to
  * wrap that paragraph (built-in cover/title boxes), fall back to a plain
  * text search — safe here because Locate only SELECTS, never replaces. */
+/* Floating text boxes (Word shapes) are invisible to anchors AND to
+ * body.search — the run-6 cover date lived in one ("Textbox: April 2025" in
+ * Word's own navigation). The Shapes API (newer desktop builds) can reach
+ * them; every attempt is logged so an unsupported build fails loudly. */
+async function withShapeMatch(needle, nth, replacement /* null = select only */) {
+  let outcome = null;
+  await Word.run(async (ctx) => {
+    const shapes = ctx.document.body.shapes;   // throws on builds without the API
+    shapes.load("items");
+    await ctx.sync();
+    const frames = [];
+    for (const sh of shapes.items) {
+      try {
+        const tr = sh.textFrame.textRange;
+        tr.load("text");
+        frames.push({ sh, tr });
+      } catch { /* shape without a text frame */ }
+    }
+    await ctx.sync();
+    const t = needle.trim();
+    let pool = frames.filter(f => (f.tr.text || "").trim() === t);
+    if (!pool.length) pool = frames.filter(f => (f.tr.text || "").includes(t));
+    op("locate", `text boxes scanned: ${frames.length}, matching "${t.slice(0, 40)}": ${pool.length}`);
+    if (!pool.length) throw new Error("not found in floating text boxes either");
+    const target = pool[Math.min(nth, pool.length - 1)];
+    if (replacement === null) {
+      target.sh.select();
+      outcome = "text box (selected)";
+    } else {
+      try { ctx.document.changeTrackingMode = "TrackAll"; } catch { /* <1.4 */ }
+      target.tr.insertText(replacement, "Replace");
+      outcome = "text box (replaced)";
+    }
+    await ctx.sync();
+  });
+  return outcome;
+}
+
 async function selectByAnchorOrText(anchor, text, nth = 0) {
   if (anchor) {
     try { await withCc(anchor, async (_c, cc) => cc.select()); return "anchor " + anchor; }
@@ -329,17 +404,24 @@ async function selectByAnchorOrText(anchor, text, nth = 0) {
       op("locate", `anchor ${anchor} lookup failed (${fmtErr(e)}) — falling back to text search`);
     }
   }
-  if (!text) throw new Error("nothing to locate");
+  if (!text || !text.trim()) throw new Error("nothing to locate");
+  const needle = text.trim().slice(0, 120);
   let how = "";
   await Word.run(async (ctx) => {
-    const found = ctx.document.body.search(text.slice(0, 120), { matchCase: true });
+    const found = ctx.document.body.search(needle, { matchCase: true });
     found.load("items");
     await ctx.sync();
-    op("locate", `text search "${text.slice(0, 60)}" → ${found.items.length} match(es)`);
-    if (!found.items.length) throw new Error("not found by anchor or text (floating text box?)");
+    op("locate", `text search "${needle.slice(0, 60)}" → ${found.items.length} match(es)`);
+    if (!found.items.length) throw new Error("no body match");
     found.items[Math.min(nth, found.items.length - 1)].select();
     how = "text search";
     await ctx.sync();
+  }).catch(async (e) => {
+    // last resort: floating text boxes
+    try { how = await withShapeMatch(text, nth, null); }
+    catch (e2) {
+      throw new Error(fmtErr(e) + "; shapes: " + fmtErr(e2));
+    }
   });
   return how;
 }
@@ -581,10 +663,14 @@ async function applyOne(i) {
     errs.push("no anchor (Word refused to wrap this paragraph)");
   }
   if (!via) {
+    const { nth, total } = anchorlessOrdinal(i);
     try {
-      const { nth, total } = anchorlessOrdinal(i);
       via = await replaceByTextOccurrence(p, nth, total);
-    } catch (e) { errs.push("text fallback: " + fmtErr(e)); }
+    } catch (e) {
+      errs.push("text fallback: " + fmtErr(e));
+      try { via = await withShapeMatch(p.before, nth, p.after); }   // floating box
+      catch (e2) { errs.push("shapes: " + fmtErr(e2)); }
+    }
   }
   if (via) {
     op("apply", `OK ${id} via ${via}`);
