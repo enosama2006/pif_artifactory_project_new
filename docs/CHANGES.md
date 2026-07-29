@@ -11,6 +11,54 @@ Each change-set maps to ONE commit; find its hash with
 
 ---
 
+## Change-set: HITL run-2b — Reference-cell patterns + the dedicated reviser (2026-07-29)
+
+Trigger: owner clarified the run-2 comment: the target was the whole
+Reference cell — "The directive issued by the Saudi Authority … under
+Cabinet Resolution number (292) dating 27/04/1441H" — where the resolution
+number and Hijri date SURVIVED the rewrite and re-identify the hidden
+authority. Two confirmed asks: (1) the initial run must catch these
+patterns deterministically; (2) a comment must produce an ACTUAL text
+change visible in the add-in.
+
+### agent/app/pipeline/candidates/sweep.py
+- **What:** (1) the slashed-date pattern now accepts 3–4-digit years and
+  an optional Hijri suffix (`27/04/1441H`, `هـ`); (2) NEW DECISION_NO
+  pattern for a parenthesized number after a number-word
+  ("number (292)", "رقم (292)").
+- **Why:** both fragments escaped every existing pattern, so they never
+  reached classify/cascade and survived the rewrite.
+- **Rollback:** restore `\b\d{1,2}/\d{1,2}/\d{4}\b` and drop the
+  parenthesized pattern.
+
+### agent/app/pipeline/redo/prompt.py (NEW) + engine.py
+- **What:** `rewrite_leaf` targets no longer join the decide mini-batch;
+  each gets a DEDICATED reviser call (`build_revise_prompt`) whose only
+  job is the corrected full text per the user's comment. The output is
+  validated (tags ⊆ dictionary + standard breakage placeholders — always
+  allowed now, cascade fired or not), leak-gated, then applied as a
+  payload override. Every failure mode lands on the comment's report
+  entry: reviser error / no text / invented tag / identity leak /
+  identical text.
+- **Why:** HITL runs 1–2 proved piggybacking the user's rewrite request
+  on the general decide prompt yields acknowledgments, not text.
+- **Rollback:** re-add `affected |= forced_redecide` and delete the 7b
+  reviser block + prompt file; comments stop changing text again
+  (consciously).
+
+### agent/app/pipeline/arbiter/prompt.py
+- **What:** guide updated — rewrite_leaf now legitimately covers
+  "insufficient abstraction" of numbers/dates/codes (the reviser can mask
+  them with standard placeholders); add_surface stays the only route for
+  missed identity NAMES.
+
+### Tests
+- Reworked 3 reviser tests (fix lands + reported, invented tag = visible
+  error, identical text = visible warning) + sweep test for the exact
+  Reference cell (83 total, green).
+
+---
+
 ## Change-set: HITL run-2 fixes — name-chunk placeholders, rename routing, visible redo outcome (2026-07-29)
 
 Trigger: run `abcd1b02f497` — owner commented "wrong anonymising, you must

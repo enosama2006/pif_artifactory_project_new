@@ -64,9 +64,9 @@ class ScriptedLlm:
     """task-keyed answers + call counting, like the other stage tests."""
     is_stub = False
 
-    def __init__(self, arbiter=None, decide=None):
-        self.arbiter, self.decide = arbiter or [], decide
-        self.calls = {"arbiter": 0, "decide": 0}
+    def __init__(self, arbiter=None, decide=None, revise=None):
+        self.arbiter, self.decide, self.revise = arbiter or [], decide, revise
+        self.calls = {"arbiter": 0, "decide": 0, "revise": 0}
 
     def json_call(self, prompt, *, payload=None, **kw):
         task = (payload or {}).get("task")
@@ -81,6 +81,12 @@ class ScriptedLlm:
             return self.decide or {"decisions": {
                 l["id"]: {"decision": "REWRITE", "use": None, "reason": "ok"}
                 for l in payload["leaves"]}}
+        if task == "revise":
+            self.calls["revise"] += 1
+            if callable(self.revise):
+                return self.revise(payload)
+            return self.revise or {"rewrite": payload["current_rewrite"],
+                                   "reason": "no change"}
         raise AssertionError(f"unexpected task {task!r}")
 
 
@@ -187,31 +193,36 @@ def test_case2_rename_propagates_to_texts_without_llm():
     assert delta["actors"]["ACT_001"]["placeholder"] == "<board_of_directors>"
 
 
-# ── owner case 3: unconvincing leaf redone with the comment as guidance ─────
+# ── owner case 3: unconvincing leaf redone by the dedicated reviser ─────────
 
-def test_case3_rewrite_leaf_carries_the_user_guidance_into_decide():
+def test_case3_rewrite_leaf_goes_to_the_reviser_and_changes_the_text():
     actors = {"ACT_001": BOARD}
     result = build_result(LEAVES, actors)
     seen = {}
+    fixed = "Approved by <governing_board> under resolution <reference_number> dated <date>."
 
-    def decide(payload):
-        seen.update(payload.get("user_guidance") or {})
-        return {"decisions": {l["id"]: {"decision": "REVIEW", "use": None,
-                                        "reason": "per user comment"}
-                              for l in payload["leaves"]}}
+    def revise(payload):
+        seen.update(payload)
+        return {"rewrite": fixed, "reason": "per user comment"}
 
     llm = ScriptedLlm(arbiter=[{
         "op": "rewrite_leaf", "leaf_id": "L_000003",
-        "guidance": "replace the whole approval sentence, not just the name",
-        "reason": "user unconvinced"}], decide=decide)
+        "guidance": "abstract the whole approval cell, not just the name",
+        "reason": "user unconvinced"}], revise=revise)
     comments = [{"id": "c1", "text": "الصياغة غير مقنعة — أعد كتابة الخلية كاملة",
                  "bind": {"leaf_id": "L_000003"},
                  "resolved": {"leaf_id": "L_000003", "how": "explicit"}}]
     delta = asyncio.run(redo_run(result, comments, llm))
-    assert llm.calls["decide"] == 1
-    assert "L_000003" in seen                  # guidance reached the prompt
-    assert any(r["leaf_id"] == "L_000003" for r in delta["review_queue"])
+    assert llm.calls["revise"] == 1
+    assert llm.calls["decide"] == 0            # the reviser replaces decide here
+    assert seen["comment"]                     # guidance reached the prompt
+    assert "<reference_number>" in seen["allowed_placeholders"] \
+           and "<date>" in seen["allowed_placeholders"]
+    item = next(p for p in delta["payload"] if p["leaf_id"] == "L_000003")
+    assert item["after"] == fixed
+    assert item["rewritten_by_guidance"] is True
     assert "L_000003" in delta["updated_leaf_ids"]
+    assert delta["redo_report"][0]["applied"] == "text revised per your comment"
 
 
 # ── invalid arbiter output is shown, never executed ─────────────────────────
@@ -266,12 +277,11 @@ def test_ignore_actor_dissolves_rewrites():
     assert all("<governing_board>" not in p["after"] for p in delta["payload"])
 
 
-# ── guided rewrites: the decide response may carry full corrected text ──────
-# (HITL run 1: "fix the duplicated employees" was obeyed in the decide REASON
-# while the span-rendered text kept the duplication — rewrite_leaf was
-# toothless because the payload was built from spans only)
+# ── the reviser: comment-driven text changes actually land ──────────────────
+# (HITL runs 1-2: piggybacking the rewrite request on decide produced
+# acknowledgments in the REASON while the text never changed)
 
-def test_guided_rewrite_text_is_applied_and_reported():
+def test_reviser_fixes_wording_and_is_reported():
     actors = {"ACT_001": BOARD}
     dup = Leaf("L_000010", "paragraph",
                "Reports go to the Board the Board for approval.", "s1",
@@ -280,16 +290,11 @@ def test_guided_rewrite_text_is_applied_and_reported():
     result = build_result(leaves, actors)
 
     fixed = "Reports go to <governing_board> for approval."
-
-    def decide(payload):
-        return {"decisions": {l["id"]: {
-            "decision": "REWRITE", "use": None, "reason": "per guidance",
-            "rewrite": fixed} for l in payload["leaves"]}}
-
     llm = ScriptedLlm(arbiter=[{
         "op": "rewrite_leaf", "leaf_id": "L_000010",
         "guidance": "remove the duplicated Board mention",
-        "reason": "user says duplicated"}], decide=decide)
+        "reason": "user says duplicated"}],
+        revise={"rewrite": fixed, "reason": "deduplicated"})
     comments = [{"id": "c1", "text": "fix it, the Board was duplicated",
                  "bind": {"leaf_id": "L_000010"},
                  "resolved": {"leaf_id": "L_000010", "how": "explicit"}}]
@@ -301,42 +306,37 @@ def test_guided_rewrite_text_is_applied_and_reported():
     assert "warning" not in delta["redo_report"][0]
 
 
-def test_guided_rewrite_with_invented_placeholder_is_ignored():
+def test_reviser_invented_placeholder_is_a_visible_error():
     actors = {"ACT_001": BOARD}
     result = build_result(LEAVES, actors)
-
-    def decide(payload):
-        return {"decisions": {l["id"]: {
-            "decision": "REWRITE", "use": None, "reason": "per guidance",
-            "rewrite": "Approved by <made_up_tag> yesterday."}
-            for l in payload["leaves"]}}
-
     llm = ScriptedLlm(arbiter=[{
         "op": "rewrite_leaf", "leaf_id": "L_000003",
-        "guidance": "reword it", "reason": "user asked"}], decide=decide)
+        "guidance": "reword it", "reason": "user asked"}],
+        revise={"rewrite": "Approved by <made_up_tag> yesterday.",
+                "reason": "reworded"})
     comments = [{"id": "c1", "text": "reword this cell",
                  "bind": {"leaf_id": "L_000003"},
                  "resolved": {"leaf_id": "L_000003", "how": "explicit"}}]
     delta = asyncio.run(redo_run(result, comments, llm))
-    # the invented tag never reaches the payload — spans stay in charge
+    # the invented tag never reaches the payload — and the WHY is visible
     assert not any("<made_up_tag>" in p["after"] for p in delta["payload"])
+    assert "outside the locked dictionary" in delta["redo_report"][0]["error"]
 
 
-def test_rewrite_leaf_with_no_effect_gets_a_visible_warning():
-    # HITL run 1: three redos reported "✓ rewrite_leaf" while zero leaves
-    # changed — the report must say so instead of implying success.
+def test_reviser_identical_text_gets_a_visible_warning():
+    # HITL runs 1-2: redos reported "✓" while zero leaves changed — the
+    # report must say so instead of implying success.
     actors = {"ACT_001": BOARD}
     result = build_result(LEAVES, actors)
     llm = ScriptedLlm(arbiter=[{
         "op": "rewrite_leaf", "leaf_id": "L_000003",
         "guidance": "anonymize the missing name",
-        "reason": "user asked"}])   # decide default: REWRITE, no rewrite text
+        "reason": "user asked"}])   # revise default: echoes the current text
     comments = [{"id": "c1", "text": "this must be anonymized",
                  "bind": {"leaf_id": "L_000003"},
                  "resolved": {"leaf_id": "L_000003", "how": "explicit"}}]
     delta = asyncio.run(redo_run(result, comments, llm))
-    if "L_000003" not in delta["updated_leaf_ids"]:
-        assert "no visible change" in delta["redo_report"][0]["warning"]
+    assert "identical" in delta["redo_report"][0]["warning"]
 
 
 def test_add_surface_reports_mentions_linked():
@@ -352,6 +352,20 @@ def test_add_surface_reports_mentions_linked():
                  "resolved": {"leaf_id": "L_000001", "how": "anchor"}}]
     delta = asyncio.run(redo_run(result, comments, llm))
     assert delta["redo_report"][0]["mentions_linked"] == 2   # both siblings
+
+
+# ── HITL run 2: the Reference cell's identifying fragments must be caught ───
+
+def test_sweep_catches_hijri_date_and_parenthesized_resolution_number():
+    from app.pipeline.candidates import sweep as run_sweep
+    leaves = [Leaf("L_000037", "table_cell",
+                   "The directive issued by the Saudi Authority for Data and "
+                   "Artificial Intelligence under Cabinet Resolution number "
+                   "(292) dating 27/04/1441H", "root",
+                   row="t3r1", col="Reference")]
+    surfaces = {c["surface"] for c in run_sweep(leaves)}
+    assert "27/04/1441H" in surfaces           # Hijri date, H suffix
+    assert any("(292)" in s for s in surfaces)  # parenthesized resolution no.
 
 
 # ── HITL run 2: name-echoing placeholder + arbiter context for renames ──────

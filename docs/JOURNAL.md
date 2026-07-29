@@ -289,11 +289,32 @@ placeholder; add-in 0.8.2 renders the last redo's outcome as colored
 cards in the Comments section and scrolls them into view when zero cards
 changed.
 
+## HITL run 2b — owner clarification (2026-07-29)
+The run-2 comment's REAL target (owner corrected my reading twice — the
+correction is the lesson): the whole Reference cell. Its rewrite replaced
+only the authority name and left "Cabinet Resolution number (292)" and
+the Hijri date "27/04/1441H" — orphaned qualifiers that re-identify the
+hidden authority, exactly what the cascade exists for. They escaped
+because the slashed-date pattern required a word boundary the trailing
+"H" breaks, and no pattern knew parenthesized numbers.
+Owner's two confirmed requirements: (1) the initial run must catch these
+shapes deterministically; (2) a comment must produce an ACTUAL text
+change that shows up in the add-in — "I still don't see comments
+reflected".
+**Fixed:** sweep catches `27/04/1441H`/`هـ` (3–4-digit years) and
+"number (292)"-style parenthesized resolution numbers → they now
+classify and cascade like any qualifier. And rewrite_leaf comments now
+go to a DEDICATED reviser call (not the decide batch): one leaf, the
+user's comment, the current rewrite, the allowed vocabulary (dictionary
++ standard breakage placeholders, always available) → corrected full
+text, validated + leak-gated, applied as an override. Every failure is
+a visible report entry (invented tag, identical text, leak).
+
 ## How to continue
-Next calibration run exercises the fixed loop: comment a missed surface →
-expect add_surface + mentions_linked in the redo report; a "wrong
-placeholder" comment → expect rename_placeholder rippling through every
-linked card; a wording problem → the card text actually changes (↻).
+Next calibration run exercises the fixed loop end-to-end on the
+Reference cell itself: the initial run should now mask "(292)" and
+"27/04/1441H" via cascade with no comment needed; any rewrite_leaf
+comment should visibly change its card (↻) or say exactly why not.
 Phase 2 (free comments → guidance-seeded full re-run) and org-memory
 seeding (BACKLOG 4) come after. Every change-set is mapped in
 `docs/CHANGES.md` for rollback.

@@ -12,7 +12,12 @@ _MONTHS = ("January|February|March|April|May|June|July|August|September|"
            "محرم|صفر|ربيع الأول|ربيع الآخر|جمادى الأولى|جمادى الآخرة|رجب|شعبان|رمضان|شوال|ذو القعدة|ذو الحجة")
 
 _DATE_PATTERNS = [
-    re.compile(r"\b\d{1,2}/\d{1,2}/\d{4}\b"),
+    # slashed dates incl. the Hijri suffix — "27/04/1441H" escaped both the
+    # plain \d{4}\b form (the H breaks the word boundary) and the
+    # number/year code pattern (lookarounds), so the Reference cell's date
+    # survived the rewrite (HITL run 2: it re-identifies the hidden
+    # authority together with its resolution number)
+    re.compile(r"\b\d{1,2}/\d{1,2}/\d{3,4}(?:\s*(?:H|هـ))?(?!\w)"),
     re.compile(r"\b\d{4}-\d{2}-\d{2}\b"),
     re.compile(rf"(?:{_MONTHS})\s+\d{{4}}"),                    # "April 2025"
     re.compile(rf"\d{{1,2}}\s+(?:{_MONTHS})\s+\d{{4}}"),
@@ -27,6 +32,10 @@ PATTERNS = [
     # compact letter-digit codes like "Y24M06D02".
     ("DECISION_NO", re.compile(r"(?<![\d/])\d{1,4}/\d{3,4}(?![\d/])")),
     ("DECISION_NO", re.compile(r"\b(?:[A-Z]\d{2}){2,4}\b")),
+    # "Cabinet Resolution number (292)" — a parenthesized decision number
+    # after a number-word (HITL run 2: it survived the rewrite)
+    ("DECISION_NO", re.compile(r"(?:number|no\.?|رقم)\s*\(\d{1,5}\)",
+                               re.IGNORECASE)),
     ("QUOTED_NAME", re.compile(r"[«\"“]([^»\"”]{3,60})[»\"”]")),
     ("EMAIL", re.compile(r"\b[\w.+-]+@[\w-]+\.[\w.]+\b")),
 ]

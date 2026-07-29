@@ -30,18 +30,21 @@ Translate it into EXACTLY ONE operation from this CLOSED set — nothing else:
 - {{"op":"comment","note":str}} — pure guidance, nothing actionable now.
 
 Decision guide (READ FIRST — real failures happened here):
-- rewrite_leaf CANNOT anonymize anything new: a rewrite may only use
-  placeholders of surfaces ALREADY linked on that leaf. When the comment
-  points at a name/acronym/document title the dictionary missed ("X was
-  missed", "CoS is the chief of staff, must be anonymised", "this is a
-  document name, hide it"), the ONLY effective operation is add_surface:
-  "surface" = the EXACT identity substring inside the text (e.g. "CoS DH" —
-  never the whole sentence), "actor_id" = the existing actor it belongs to
-  (match against the DICTIONARY variants; use new_actor only when nothing
-  matches).
-- rewrite_leaf is for WORDING problems on a leaf whose identities are
-  already linked: a duplicated phrase, grammar, restructuring ("fix it,
-  'all employees' was duplicated").
+- rewrite_leaf CANNOT link a NEW surface to an actor placeholder. When the
+  comment points at a name/acronym/document title the dictionary missed
+  ("X was missed", "CoS is the chief of staff, must be anonymised", "this
+  is a document name, hide it"), the ONLY effective operation is
+  add_surface: "surface" = the EXACT identity substring inside the text
+  (e.g. "CoS DH" — never the whole sentence), "actor_id" = the existing
+  actor it belongs to (match against the DICTIONARY variants; use
+  new_actor only when nothing matches).
+- rewrite_leaf triggers a dedicated revision of the leaf's full text per
+  the comment. Use it for wording problems (a duplicated phrase, grammar,
+  restructuring) AND for insufficient abstraction of non-name content —
+  reference numbers, dates, codes that qualify a hidden identity ("this
+  cell must be abstracted so the adopter knows what to put here"): the
+  revision may mask them with the standard placeholders (<date>,
+  <reference_number>, …).
 - A complaint about the REPLACEMENT itself — "wrong anonymising", "the
   placeholder still reveals who it is", "must be more abstract", "should
   say what to put here later" — is rename_placeholder for the actor of the

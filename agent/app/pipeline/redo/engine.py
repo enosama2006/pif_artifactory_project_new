@@ -16,12 +16,21 @@ from dataclasses import asdict
 from ..arbiter import build_arbiter_prompt, validate_op
 from ..decide import Decision, reconcile_batch
 from ..decide.prompt import build_decide_prompt
+from ..decide.reconcile import _TAG
 from ..inventory import Actor
 from ..inventory.merge import mint_user_actor
 from ..rules.engine import compute_cascade
 from ..surface_scan import scan
 from ..surface_scan.scan import normalize
 from ..validate_assemble import validate_and_assemble
+from .prompt import build_revise_prompt
+
+# Always available to comment-driven revisions: the standard breakage
+# placeholders exist whether or not a cascade fired this run — a comment
+# like "mask the resolution number and its Hijri date" must not fail just
+# because no cascade hit produced <reference_number> yet.
+_STD_PLACEHOLDERS = {"<date>", "<reference_number>", "<document_date>",
+                     "<contact_details>", "<redacted>"}
 
 
 # ── comment → leaf resolution (deterministic, never guesses) ────────────────
@@ -213,7 +222,8 @@ async def redo_run(result: dict, comments: list[dict], llm,
     report: list[dict] = []
     edit_overrides: dict[str, str] = {}
     guidance: dict[str, str] = {}          # leaf_id → binding user comment
-    forced_redecide: set[str] = set()
+    forced_redecide: set[str] = set()      # rewrite_leaf targets → the reviser
+    revise_entries: dict[str, dict] = {}   # leaf_id → its report entry
     for c, raw in zip(comments, raw_ops):
         entry = {"comment_id": c.get("id"), "text": c["text"],
                  "resolved": c.get("resolved", {})}
@@ -235,6 +245,7 @@ async def redo_run(result: dict, comments: list[dict], llm,
         elif op.op == "rewrite_leaf":
             forced_redecide.add(op.fields["leaf_id"])
             guidance[op.fields["leaf_id"]] = op.fields["guidance"]
+            revise_entries[op.fields["leaf_id"]] = entry
         else:
             summary, err = apply_op(op, actors)
             if err:
@@ -266,17 +277,21 @@ async def redo_run(result: dict, comments: list[dict], llm,
     new_spans = span_sets([asdict(l) for l in links])
     affected = {lid for lid in set(old_spans) | set(new_spans)
                 if old_spans.get(lid, set()) != new_spans.get(lid, set())}
-    affected |= forced_redecide
     affected &= set(leaf_by_id)
+    # rewrite_leaf targets do NOT join the decide batch — they get the
+    # dedicated reviser call below (HITL runs 1-2: piggybacking the user's
+    # rewrite request on decide produced acknowledgments, not text)
+
+    links_by_leaf: dict[str, list] = {}
+    for l in links:
+        links_by_leaf.setdefault(l.leaf_id, []).append(l)
 
     # 5. decide mini-batch — ONLY the affected leaves, guidance attached
     ph = {a.actor_id: a.placeholder for a in active.values()}
-    allowed = set(ph.values()) | {c.placeholder for c in cascade}
+    allowed = (set(ph.values()) | {c.placeholder for c in cascade}
+               | _STD_PLACEHOLDERS)
     new_decisions: list[Decision] = []
     if affected:
-        links_by_leaf: dict[str, list] = {}
-        for l in links:
-            links_by_leaf.setdefault(l.leaf_id, []).append(l)
         cascade_dicts = [asdict(h) for h in cascade]
         batch_ids = sorted(affected)
         payload = {
@@ -354,7 +369,60 @@ async def redo_run(result: dict, comments: list[dict], llm,
             continue
         _override(d.leaf_id, d.rewrite, "rewritten_by_guidance")
 
-    # 7b. edit_leaf overrides — the human's wording is FINAL for those leaves
+    # 7b. the REVISER — one dedicated call per rewrite_leaf target: its only
+    # job is the corrected full text per the user's comment ("the add-in
+    # must reflect my comment" — HITL run 2). Output is validated against
+    # the allowed vocabulary + leak-gated before it touches the payload;
+    # every failure lands VISIBLY on the comment's report entry.
+    async def revise(lid):
+        lf = leaf_by_id[lid]
+        current = (payload_by_leaf.get(lid) or {}).get("after", lf.text)
+        payload = {"task": "revise",
+                   "leaf": {"id": lid, "kind": lf.kind, "text": lf.text,
+                            "column": lf.col},
+                   "current_rewrite": current,
+                   "mentions": [{"surface": x.surface,
+                                 "placeholder": ph[x.actor_id]}
+                                for x in links_by_leaf.get(lid, [])],
+                   "allowed_placeholders": sorted(allowed),
+                   "comment": guidance.get(lid, ""), "portrait": portrait}
+        try:
+            data = await asyncio.to_thread(
+                llm.json_call, build_revise_prompt(payload), payload=payload)
+            return lid, current, data
+        except Exception as exc:
+            return lid, current, {"_error": f"reviser call failed: {exc!r}"}
+
+    if forced_redecide:
+        progress(f"redo: revising {len(forced_redecide)} leaf/leaves per comment")
+    for lid, current, data in await asyncio.gather(
+            *(revise(t) for t in sorted(forced_redecide))):
+        entry = revise_entries.get(lid, {})
+        rw = data.get("rewrite") if isinstance(data, dict) else None
+        if isinstance(data, dict) and "_error" in data:
+            entry["error"] = data["_error"]
+            continue
+        if not isinstance(rw, str) or not rw.strip():
+            entry["warning"] = "the reviser returned no text — nothing changed"
+            continue
+        bad = [t for t in _TAG.findall(rw) if t not in allowed]
+        if bad:
+            entry["error"] = (f"revised text uses {', '.join(bad)} outside the "
+                              f"locked dictionary — not applied")
+            continue
+        leaks = [tok for tok, _aid, acro in _leaks_in(rw, token_index) if acro]
+        if leaks:
+            entry["warning"] = (f"revised text still carries identity token "
+                                f"«{leaks[0]}» — not applied")
+            continue
+        if rw == current:
+            entry["warning"] = ("the reviser kept the text identical — "
+                                "rephrase the comment to say what must differ")
+            continue
+        _override(lid, rw, "rewritten_by_guidance")
+        entry["applied"] = "text revised per your comment"
+
+    # 7c. edit_leaf overrides — the human's wording is FINAL for those leaves
     for lid, after in edit_overrides.items():
         _override(lid, after, "edited_by_user")
     res.metrics["rewrites"] = len(res.payload)
@@ -385,7 +453,8 @@ async def redo_run(result: dict, comments: list[dict], llm,
             continue
         f = entry.get("fields", {})
         if entry.get("op") in ("rewrite_leaf", "edit_leaf") \
-                and f.get("leaf_id") not in updated:
+                and f.get("leaf_id") not in updated \
+                and "warning" not in entry:
             entry["warning"] = ("no visible change — the final text is identical; "
                                 "if a surface was missed, ask to ADD it to the "
                                 "dictionary instead of rewriting")
