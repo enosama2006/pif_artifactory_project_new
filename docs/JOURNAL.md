@@ -236,10 +236,41 @@ map in `docs/CHANGES.md`. What shipped (phase 1, bound path):
   unconvincing row is re-done with the comment inside the prompt. Plus:
   a comment the arbiter answers with an out-of-enum op changes NOTHING.
 
+## HITL run 1 — `996b0afbd924` (2026-07-29)
+First real use of the comment loop. The plumbing all worked: selection →
+anchor → leaf resolution was exact on all 4 comments (2 via anchor, 2 via
+paragraph text), the arbiter answered in-enum every time, partial re-runs
+took 2–8 seconds. But 3 of 4 comments produced ZERO visible change while
+the log said "✓" — the owner rightly called it out.
+**Root causes (both structural, not Groq mood):**
+(1) **rewrite_leaf was toothless.** The payload text is rendered from
+SPANS only; the guided decide obeyed the comment in its REASON ("removed
+duplicated employee mention per guidance") while the text stayed
+untouched — there was no channel for the model to change wording.
+(2) **The arbiter picked rewrite_leaf where add_surface was the only
+effective op.** "CoS is chief of staff, must be anonymised" needs
+`add_surface("CoS DH" → ACT_001)`; a rewrite cannot introduce a
+placeholder for an unlinked surface, so the comment dead-ended.
+Also: the report showed "✓ rewrite_leaf" with no effect — misleading; and
+the 💬 button jumped the pane to the bottom section (owner: must be an
+in-place popup).
+**Fixed:** decision guide in the arbiter prompt (missed surface ⇒
+add_surface with the exact substring + existing actor; linked_mentions of
+the bound leaf shipped as the test); guided rewrites — the decide response
+may carry full corrected text, locked-dictionary-checked in reconcile and
+leak-gated in the engine, applied as an override; honest per-comment
+effect (⚠ "no visible change" warning, mentions_linked count for
+add_surface); add-in 0.8.1 in-place comment popover with "🔁 Send & Redo"
+and "➕ Queue".
+**Watch next run:** a "CoS DH" comment should now report
+`add_surface … — 7 new mention(s) linked` and clear all seven residual-DH
+REVIEWs at once; a duplication comment should change the card text and
+badge it ↻.
+
 ## How to continue
-Next calibration run exercises the loop end-to-end: run → comment the gaps
-(select text / 💬 a row / 💬 a card) → 🔁 Redo → check the ↻ badges and the
-redo report in diagnostics v3. Phase 2 (free comments → guidance-seeded
-full re-run) and org-memory seeding (BACKLOG 4) come after the loop proves
-itself on the real document. Every change-set is mapped in
-`docs/CHANGES.md` for rollback.
+Next calibration run exercises the fixed loop: comment a missed surface →
+expect add_surface + mentions_linked in the redo report; comment a wording
+problem → expect the card text to actually change (↻ badge). Phase 2
+(free comments → guidance-seeded full re-run) and org-memory seeding
+(BACKLOG 4) come after. Every change-set is mapped in `docs/CHANGES.md`
+for rollback.

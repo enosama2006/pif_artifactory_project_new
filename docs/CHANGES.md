@@ -11,6 +11,57 @@ Each change-set maps to ONE commit; find its hash with
 
 ---
 
+## Change-set: HITL run-1 fixes — popover UX, guided rewrites, honest reports (2026-07-29)
+
+Trigger: run `996b0afbd924`, the first real use of the comment loop. Owner
+findings: (1) 💬 jumped to the bottom instead of opening in place; (2) three
+of four comments produced ZERO change while the log said "✓". Root causes:
+rewrite_leaf was structurally toothless (the payload is built from spans
+only, so the guided decide could obey the comment in its REASON while the
+text never changed), and the arbiter picked rewrite_leaf where add_surface
+was the only effective op ("CoS DH", the missed document name).
+
+### agent/app/pipeline/arbiter/prompt.py
+- **What:** "Decision guide" section: rewrite_leaf CANNOT anonymize
+  anything new — a missed name/acronym/title is add_surface with the EXACT
+  substring + the matching existing actor_id; rewrite_leaf is for wording
+  problems on already-linked leaves; TARGET CONTEXT's linked_mentions list
+  is the test for "missed".
+- **Rollback:** remove the guide block; the misrouting returns.
+
+### agent/app/pipeline/redo/engine.py
+- **What:** (1) target context now carries `linked_mentions` of the bound
+  leaf; (2) guided rewrites: a decide response for a user-guided leaf may
+  carry full corrected text which OVERRIDES the span-rendered after
+  (leak-gated: an acronymish identity token in it → REVIEW instead);
+  (3) per-comment EFFECT in the report — rewrite/edit ops whose leaf did
+  not change get `warning: "no visible change…"`, add_surface gets
+  `mentions_linked` (link-count delta for the actor).
+- **Rollback:** each is a separate block (7a, step 9, target_context).
+
+### agent/app/pipeline/decide/reconcile.py + decide/prompt.py
+- **What:** `Decision.rewrite` field — accepted ONLY when every tag inside
+  is in the locked dictionary; the guidance prompt section documents the
+  "rewrite" option (initial-run prompt unchanged — the section only exists
+  when guidance does).
+- **Rollback:** drop the field + the reconcile block; guided rewrites
+  silently stop applying (the no-change warning will say so).
+
+### addin/taskpane.js (0.8.0 → 0.8.1) + taskpane.html
+- **What:** 💬 opens an in-place POPOVER on the card/row/actor (textarea +
+  "🔁 Send & Redo" + "➕ Queue") — no jump to the bottom; the bottom
+  section remains the drawer (pending list, selection comments, free
+  comments); redo log lines now show mentions_linked and ⚠ no-change
+  warnings.
+- **Rollback:** restore bindToActor/bindToLeaf to the chip flow of 0.8.0.
+
+### Tests
+- 4 new: guided rewrite applied + reported, invented placeholder in a
+  rewrite ignored, no-effect rewrite gets a visible warning, add_surface
+  reports mentions_linked (80 total, green).
+
+---
+
 ## Change-set: HITL comments + Redo, phase 1 — bound arbiter path (2026-07-29)
 
 Trigger: owner-confirmed focus after run 7 — Human-in-the-loop that

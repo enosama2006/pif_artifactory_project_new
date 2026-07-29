@@ -13,7 +13,7 @@
  */
 /* global Office, Word, fetch, document */
 
-const UI_VERSION = "0.8.0";        // bump when the pane changes — shown in the header
+const UI_VERSION = "0.8.1";        // bump when the pane changes — shown in the header
 let RUN = null;                    // completed run result
 let COMMENTS = [];                 // pending HITL comments (mirror of the server)
 let PENDING_BIND = null;           // {bind:{...}, label} set by the 💬 buttons
@@ -515,7 +515,7 @@ function renderResults() {
         `<button class="ghost small" onclick="renamePlaceholder('${a.actor_id}')" ${off ? "disabled" : ""}>Save</button> ` +
         `<button class="ghost small" onclick="locateActor('${a.actor_id}')" title="Cycle through this actor's mentions in the document">📍 ${(MENTIONS[a.actor_id] || []).length}</button> ` +
         `<button class="ghost small" onclick="toggleIgnore('${a.actor_id}')">${off ? "↩ Restore" : "🚫 Ignore"}</button> ` +
-        `<button class="ghost small" onclick="bindToActor('${a.actor_id}')" title="Comment on this actor — the Redo propagates it to the DB and every linked text">💬</button>` +
+        `<button class="ghost small" onclick="bindToActor('${a.actor_id}', this)" title="Comment on this actor — the Redo propagates it to the DB and every linked text">💬</button>` +
         `</td></tr>`;
       }).join("") + "</table>"
     : "<div class='muted'>No actors extracted (stub mode? set GROQ_API_KEY and rerun).</div>";
@@ -560,7 +560,7 @@ function renderResults() {
     `<button class="ghost small" onclick='applyRow(${JSON.stringify(idxs)})'>✓ Apply row</button>` +
     `<button class="ghost small" onclick="goTo(${idxs[0]})">Locate</button>` +
     `<button class="ghost small" onclick='rejectRow(${JSON.stringify(idxs)}, "${esc(rk)}")'>✗ Reject row</button>` +
-    `<button class="ghost small" onclick="bindToLeaf(${idxs[0]})" title="Comment on this row — the Redo re-does it per your instruction">💬</button>` +
+    `<button class="ghost small" onclick="bindToLeaf(${idxs[0]}, this)" title="Comment on this row — the Redo re-does it per your instruction">💬</button>` +
     `</div></div>`;
 
   const singleCard = (i) => {
@@ -577,7 +577,7 @@ function renderResults() {
     `<button class="ghost small" onclick="editItem(${i})">✎ Edit</button>` +
     `<button class="ghost small" onclick="goTo(${i})">Locate</button>` +
     (review ? "" : `<button class="ghost small" onclick="reject(${i})">✗ Reject</button>`) +
-    `<button class="ghost small" onclick="bindToLeaf(${i})" title="Comment on this text — the Redo re-does it per your instruction">💬</button>` +
+    `<button class="ghost small" onclick="bindToLeaf(${i}, this)" title="Comment on this text — the Redo re-does it per your instruction">💬</button>` +
     `<span class="anchor" style="margin-inline-start:auto">${esc(p.anchor || p.leaf_id)}</span>` +
     `</div></div>`;
   };
@@ -797,36 +797,56 @@ async function removeAnchors() {
  * turns each comment into ONE closed operation, invalid output is shown and
  * never executed, and only affected leaves are re-decided. */
 
-function bindToActor(actorId) {
+/* Owner feedback (HITL run 1): the 💬 button scrolled the pane to the bottom
+ * section — the comment must open IN PLACE, as a popover on the element the
+ * user is looking at, with its own submit. The bottom section remains the
+ * drawer (pending list + selection/free comments). */
+function bindToActor(actorId, btn) {
   const a = RUN.actors[actorId];
-  PENDING_BIND = { bind: { actor_id: actorId }, label: `actor «${a.name}»` };
-  showBindChip();
-  $("commentText").focus();
+  openCommentPopover(btn, { actor_id: actorId }, `actor «${a.name}»`);
 }
 
-function bindToLeaf(i) {
+function bindToLeaf(i, btn) {
   const p = RUN.payload[i];
-  PENDING_BIND = { bind: { leaf_id: p.leaf_id },
-                   label: `${p.row ? "row cell " : "text "}${p.leaf_id}` };
-  showBindChip();
-  $("commentText").focus();
+  openCommentPopover(btn, { leaf_id: p.leaf_id },
+                     `${p.row ? "row cell " : "text "}${p.leaf_id}`);
 }
 
-function showBindChip() {
-  const chip = $("bindChip");
-  if (PENDING_BIND) {
-    chip.style.display = "block";
-    chip.innerHTML = `bound to ${esc(PENDING_BIND.label)} ` +
-      `<button class="ghost small" onclick="clearBind()">✕</button>`;
-  } else {
-    chip.style.display = "none";
-    chip.innerHTML = "";
-  }
+function openCommentPopover(btn, bind, label) {
+  closeCommentPopover();
+  PENDING_BIND = { bind, label };
+  const pop = document.createElement("div");
+  pop.id = "commentPopover";
+  pop.innerHTML =
+    `<div class="muted" style="margin-bottom:4px">💬 ${esc(label)}</div>` +
+    `<textarea id="popText" placeholder="What should change here?"></textarea>` +
+    `<div class="actions" style="margin-top:5px">` +
+    `<button class="ghost small" onclick="popoverSubmit(true)">🔁 Send &amp; Redo</button>` +
+    `<button class="ghost small" onclick="popoverSubmit(false)" title="Queue it — run all queued comments later with one Redo">➕ Queue</button>` +
+    `<button class="ghost small" onclick="closeCommentPopover()">✕</button>` +
+    `</div>`;
+  document.body.appendChild(pop);
+  const r = btn ? btn.getBoundingClientRect() : { bottom: 60, left: 20 };
+  pop.style.top = (window.scrollY + r.bottom + 6) + "px";
+  pop.style.left = Math.max(8, Math.min(
+    window.scrollX + r.left - 110,
+    document.documentElement.clientWidth - 290)) + "px";
+  $("popText").focus();
 }
 
-function clearBind() {
+function closeCommentPopover() {
+  const pop = $("commentPopover");
+  if (pop) pop.remove();
   PENDING_BIND = null;
-  showBindChip();
+}
+
+async function popoverSubmit(runNow) {
+  const text = ($("popText") ? $("popText").value : "").trim();
+  if (!text) { log("Write the comment first."); return; }
+  const b = PENDING_BIND;                 // capture before close clears it
+  closeCommentPopover();
+  await postCommentText(text, b ? b.bind : {}, b ? b.label : "free comment");
+  if (runNow) await redoWithComments();
 }
 
 /* Case 1 (missed surface): the user selects the text in Word, writes the
@@ -857,17 +877,18 @@ async function commentOnSelection() {
   if (!bind.selected_text) {
     log("Nothing selected — select the target text in the document first."); return;
   }
-  await postComment(bind, `selection «${bind.selected_text.slice(0, 40)}»`);
+  const text = $("commentText").value.trim();
+  $("commentText").value = "";
+  await postCommentText(text, bind, `selection «${bind.selected_text.slice(0, 40)}»`);
 }
 
 function submitComment() {
-  postComment(PENDING_BIND ? PENDING_BIND.bind : {},
-              PENDING_BIND ? PENDING_BIND.label : "free comment");
+  postCommentText($("commentText").value.trim(), {}, "free comment");
+  $("commentText").value = "";
 }
 
-async function postComment(bind, label) {
+async function postCommentText(text, bind, label) {
   if (!RUN) { log("Run the pipeline first."); return; }
-  const text = $("commentText").value.trim();
   if (!text) { log("Empty comment."); return; }
   try {
     const r = await (await fetch(`${SERVER}/runs/${RUN.run_id}/comments`, {
@@ -878,8 +899,6 @@ async function postComment(bind, label) {
     if (!r.ok) throw new Error(r.error || "comment rejected");
     r.comment.label = label;
     COMMENTS.push(r.comment);
-    $("commentText").value = "";
-    clearBind();
     renderComments();
     const res = r.comment.resolved || {};
     op("comment", `added (${label}) → ` +
@@ -931,7 +950,9 @@ async function redoWithComments() {
       if (e.error) op("redo", `✗ "${(e.text || "").slice(0, 50)}" — ${e.error}` +
                              ` (nothing was executed for this comment)`);
       else op("redo", `✓ "${(e.text || "").slice(0, 50)}" → ${e.op}` +
-                      (e.applied ? ` (${e.applied})` : ""));
+                      (e.applied ? ` (${e.applied})` : "") +
+                      (e.mentions_linked != null ? ` — ${e.mentions_linked} new mention(s) linked` : "") +
+                      (e.warning ? ` — ⚠ ${e.warning}` : ""));
     });
     RUN = { run_id: RUN.run_id, llm_mode: RUN.llm_mode, ...r.result };
     COMMENTS = [];

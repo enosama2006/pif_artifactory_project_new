@@ -29,6 +29,23 @@ Translate it into EXACTLY ONE operation from this CLOSED set — nothing else:
   should HAPPEN to the leaf (rephrase the guidance in English, keep it exact).
 - {{"op":"comment","note":str}} — pure guidance, nothing actionable now.
 
+Decision guide (READ FIRST — real failures happened here):
+- rewrite_leaf CANNOT anonymize anything new: a rewrite may only use
+  placeholders of surfaces ALREADY linked on that leaf. When the comment
+  points at a name/acronym/document title the dictionary missed ("X was
+  missed", "CoS is the chief of staff, must be anonymised", "this is a
+  document name, hide it"), the ONLY effective operation is add_surface:
+  "surface" = the EXACT identity substring inside the text (e.g. "CoS DH" —
+  never the whole sentence), "actor_id" = the existing actor it belongs to
+  (match against the DICTIONARY variants; use new_actor only when nothing
+  matches).
+- rewrite_leaf is for WORDING problems on a leaf whose identities are
+  already linked: a duplicated phrase, grammar, restructuring ("fix it,
+  'all employees' was duplicated").
+- TARGET CONTEXT lists the surfaces already linked on the bound leaf —
+  anything identity-like in its text that is NOT in that list is a missed
+  surface (add_surface), not a rewrite.
+
 Rules:
 - ONE operation only. If the comment asks several things, pick the primary
   one and mention the rest in "reason".

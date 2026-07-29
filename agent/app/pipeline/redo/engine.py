@@ -179,7 +179,14 @@ async def redo_run(result: dict, comments: list[dict], llm,
             out["actor"] = dictionary.get(r["actor_id"])
         lid = r.get("leaf_id")
         if lid and lid in leaf_by_id:
-            out["leaf"] = {"id": lid, "text": leaf_by_id[lid].text}
+            # linked_mentions is decisive for the arbiter's add_surface-vs-
+            # rewrite_leaf choice: identity in the text but NOT in this list
+            # is a missed surface (HITL run 1: "CoS DH" comments became
+            # toothless rewrite_leaf ops instead of add_surface).
+            out["leaf"] = {
+                "id": lid, "text": leaf_by_id[lid].text,
+                "linked_mentions": sorted({l["surface"] for l in old_links
+                                           if l["leaf_id"] == lid})}
             if lid in old_payload_by_leaf:
                 out["current_rewrite"] = old_payload_by_leaf[lid].get("after")
         return out
@@ -304,9 +311,9 @@ async def redo_run(result: dict, comments: list[dict], llm,
     res = validate_and_assemble(leaves, links, list(decisions.values()),
                                 active, cascade)
 
-    # 7. edit_leaf overrides — the human's wording is FINAL for those leaves
     payload_by_leaf = {p["leaf_id"]: p for p in res.payload}
-    for lid, after in edit_overrides.items():
+
+    def _override(lid, after, flag):
         lf = leaf_by_id[lid]
         item = payload_by_leaf.get(lid)
         if item is None:
@@ -315,11 +322,36 @@ async def redo_run(result: dict, comments: list[dict], llm,
                     "spans": []}
             res.payload.append(item)
             res.payload.sort(key=lambda p: p["leaf_id"])
+            payload_by_leaf[lid] = item
         else:
             item["after"] = after
             item["spans"] = []
-        item["edited_by_user"] = True
+        item[flag] = True
         res.review_queue = [r for r in res.review_queue if r["leaf_id"] != lid]
+
+    # 7a. guided rewrites — spans cannot express a wording fix (HITL run 1:
+    # "fix the duplicated employees" was obeyed in the decide REASON while
+    # the span-rendered text kept the duplication). The rewrite text passed
+    # the locked-dictionary check in reconcile; the leak gate runs here.
+    from ..validate_assemble.validate import _actor_token_index, _leaks_in
+    token_index = _actor_token_index(active)
+    for d in new_decisions:
+        if d.decision != "REWRITE" or not d.rewrite:
+            continue
+        if d.rewrite == leaf_by_id[d.leaf_id].text:
+            continue
+        leaks = [tok for tok, _aid, acro in _leaks_in(d.rewrite, token_index) if acro]
+        if leaks:
+            res.review_queue.append({
+                "leaf_id": d.leaf_id, "text": leaf_by_id[d.leaf_id].text,
+                "reason": f"guided rewrite still carries identity token "
+                          f"«{leaks[0]}» — not applied"})
+            continue
+        _override(d.leaf_id, d.rewrite, "rewritten_by_guidance")
+
+    # 7b. edit_leaf overrides — the human's wording is FINAL for those leaves
+    for lid, after in edit_overrides.items():
+        _override(lid, after, "edited_by_user")
     res.metrics["rewrites"] = len(res.payload)
     res.metrics["review"] = len(res.review_queue)
 
@@ -334,6 +366,31 @@ async def redo_run(result: dict, comments: list[dict], llm,
     old_review = {r["leaf_id"] for r in result.get("review_queue", [])}
     new_review = {r["leaf_id"] for r in res.review_queue}
     updated |= old_review ^ new_review
+
+    # 9. per-comment EFFECT — "✓ op" with zero visible change misled the
+    # owner (HITL run 1: three redos reported success, nothing moved).
+    old_per_actor: dict[str, int] = {}
+    for l in old_links:
+        old_per_actor[l["actor_id"]] = old_per_actor.get(l["actor_id"], 0) + 1
+    new_per_actor: dict[str, int] = {}
+    for l in links:
+        new_per_actor[l.actor_id] = new_per_actor.get(l.actor_id, 0) + 1
+    for entry in report:
+        if "error" in entry:
+            continue
+        f = entry.get("fields", {})
+        if entry.get("op") in ("rewrite_leaf", "edit_leaf") \
+                and f.get("leaf_id") not in updated:
+            entry["warning"] = ("no visible change — the final text is identical; "
+                                "if a surface was missed, ask to ADD it to the "
+                                "dictionary instead of rewriting")
+        if entry.get("op") == "add_surface":
+            aid = f.get("actor_id") or next(
+                (a.actor_id for a in actors.values()
+                 if f.get("surface", "") in a.variants), None)
+            if aid:
+                entry["mentions_linked"] = (new_per_actor.get(aid, 0)
+                                            - old_per_actor.get(aid, 0))
 
     return {"actors": {k: asdict(a) for k, a in actors.items()},
             "links": [asdict(l) for l in links],

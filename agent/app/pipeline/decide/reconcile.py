@@ -21,6 +21,10 @@ class Decision:
     decision: str               # ∈ VALID_DECISIONS
     placeholder: str | None = None
     reason: str = ""
+    # Full corrected text — produced ONLY for user-guided leaves in the
+    # comment-driven redo: spans cannot express wording fixes (a duplicated
+    # phrase survived a "fix the duplication" comment, HITL run 1).
+    rewrite: str | None = None
 
 
 def reconcile_batch(sent_leaf_ids: list[str], response: dict,
@@ -59,6 +63,13 @@ def reconcile_batch(sent_leaf_ids: list[str], response: dict,
                 out.append(Decision(leaf_id, "REVIEW",
                                     reason=f"invented placeholder {ph} — not in the locked dictionary"))
                 continue
-        out.append(Decision(leaf_id, decision, placeholder=ph,
-                            reason=entry.get("reason", "")))
+        d = Decision(leaf_id, decision, placeholder=ph,
+                     reason=entry.get("reason", ""))
+        # guided-rewrite text (HITL redo): accepted only when every tag in it
+        # sits in the locked dictionary — otherwise the spans stay in charge
+        rw = entry.get("rewrite")
+        if (decision == "REWRITE" and isinstance(rw, str) and rw.strip()
+                and all(t in allowed_placeholders for t in _TAG.findall(rw))):
+            d.rewrite = rw
+        out.append(d)
     return out

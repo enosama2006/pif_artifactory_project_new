@@ -61,6 +61,12 @@ def _guidance_section(payload: dict) -> str:
 USER GUIDANCE (BINDING — a human reviewed these leaves and commented; follow
 the instruction for its leaf even where the default rules would say KEEP):
 {json.dumps(guidance, ensure_ascii=False)}
+
+For a GUIDED leaf whose guidance asks for a wording change that mention
+replacement alone cannot express (a duplicated phrase, restructuring), you
+may ALSO return "rewrite": the leaf's FULL corrected text. Inside it use
+ONLY placeholders from DICTIONARY; keep everything else faithful to the
+original text.
 """
 
 

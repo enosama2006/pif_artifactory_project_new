@@ -266,6 +266,94 @@ def test_ignore_actor_dissolves_rewrites():
     assert all("<governing_board>" not in p["after"] for p in delta["payload"])
 
 
+# ── guided rewrites: the decide response may carry full corrected text ──────
+# (HITL run 1: "fix the duplicated employees" was obeyed in the decide REASON
+# while the span-rendered text kept the duplication — rewrite_leaf was
+# toothless because the payload was built from spans only)
+
+def test_guided_rewrite_text_is_applied_and_reported():
+    actors = {"ACT_001": BOARD}
+    dup = Leaf("L_000010", "paragraph",
+               "Reports go to the Board the Board for approval.", "s1",
+               anchor="anz:C_00010")
+    leaves = LEAVES + [dup]
+    result = build_result(leaves, actors)
+
+    fixed = "Reports go to <governing_board> for approval."
+
+    def decide(payload):
+        return {"decisions": {l["id"]: {
+            "decision": "REWRITE", "use": None, "reason": "per guidance",
+            "rewrite": fixed} for l in payload["leaves"]}}
+
+    llm = ScriptedLlm(arbiter=[{
+        "op": "rewrite_leaf", "leaf_id": "L_000010",
+        "guidance": "remove the duplicated Board mention",
+        "reason": "user says duplicated"}], decide=decide)
+    comments = [{"id": "c1", "text": "fix it, the Board was duplicated",
+                 "bind": {"leaf_id": "L_000010"},
+                 "resolved": {"leaf_id": "L_000010", "how": "explicit"}}]
+    delta = asyncio.run(redo_run(result, comments, llm))
+    item = next(p for p in delta["payload"] if p["leaf_id"] == "L_000010")
+    assert item["after"] == fixed
+    assert item["rewritten_by_guidance"] is True
+    assert "L_000010" in delta["updated_leaf_ids"]
+    assert "warning" not in delta["redo_report"][0]
+
+
+def test_guided_rewrite_with_invented_placeholder_is_ignored():
+    actors = {"ACT_001": BOARD}
+    result = build_result(LEAVES, actors)
+
+    def decide(payload):
+        return {"decisions": {l["id"]: {
+            "decision": "REWRITE", "use": None, "reason": "per guidance",
+            "rewrite": "Approved by <made_up_tag> yesterday."}
+            for l in payload["leaves"]}}
+
+    llm = ScriptedLlm(arbiter=[{
+        "op": "rewrite_leaf", "leaf_id": "L_000003",
+        "guidance": "reword it", "reason": "user asked"}], decide=decide)
+    comments = [{"id": "c1", "text": "reword this cell",
+                 "bind": {"leaf_id": "L_000003"},
+                 "resolved": {"leaf_id": "L_000003", "how": "explicit"}}]
+    delta = asyncio.run(redo_run(result, comments, llm))
+    # the invented tag never reaches the payload — spans stay in charge
+    assert not any("<made_up_tag>" in p["after"] for p in delta["payload"])
+
+
+def test_rewrite_leaf_with_no_effect_gets_a_visible_warning():
+    # HITL run 1: three redos reported "✓ rewrite_leaf" while zero leaves
+    # changed — the report must say so instead of implying success.
+    actors = {"ACT_001": BOARD}
+    result = build_result(LEAVES, actors)
+    llm = ScriptedLlm(arbiter=[{
+        "op": "rewrite_leaf", "leaf_id": "L_000003",
+        "guidance": "anonymize the missing name",
+        "reason": "user asked"}])   # decide default: REWRITE, no rewrite text
+    comments = [{"id": "c1", "text": "this must be anonymized",
+                 "bind": {"leaf_id": "L_000003"},
+                 "resolved": {"leaf_id": "L_000003", "how": "explicit"}}]
+    delta = asyncio.run(redo_run(result, comments, llm))
+    if "L_000003" not in delta["updated_leaf_ids"]:
+        assert "no visible change" in delta["redo_report"][0]["warning"]
+
+
+def test_add_surface_reports_mentions_linked():
+    actors = {"ACT_001": BOARD}
+    result = build_result(LEAVES, actors)
+    llm = ScriptedLlm(arbiter=[{
+        "op": "add_surface", "surface": "Strategy Office",
+        "new_actor": {"name": "Strategy Office", "kind": "ORG_UNIT",
+                      "role": "strategy office"},
+        "reason": "missed unit"}])
+    comments = [{"id": "c1", "text": "missed unit",
+                 "bind": {"anchor": "anz:C_00001"},
+                 "resolved": {"leaf_id": "L_000001", "how": "anchor"}}]
+    delta = asyncio.run(redo_run(result, comments, llm))
+    assert delta["redo_report"][0]["mentions_linked"] == 2   # both siblings
+
+
 # ── API round-trip: comments accumulate, redo consumes them ─────────────────
 
 def test_comments_api_roundtrip(monkeypatch):
