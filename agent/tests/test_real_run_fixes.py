@@ -603,3 +603,66 @@ def test_placeholder_never_edged_by_glue():
     ]])
     a = next(iter(actors.values()))
     assert a.placeholder == "<delegation_of_authority>"
+
+
+# ── seventh real run (65f9eecf0ee2): silent-loss channels closed ────────────
+
+def test_ampersand_notation_drift_links_both_forms():
+    # Variant said "Records and Administration…", the paragraph wrote
+    # "Records & Administration…" — literal scan missed it and the whole
+    # paragraph fell to REVIEW. Both notations must exist as variants.
+    from app.pipeline.inventory import merge_actors
+    actors = merge_actors([[
+        {"name": "RAC", "kind": "ORG_UNIT",
+         "role": "records management department",
+         "variants": ["RAC", "Records and Administration Center Department"]},
+    ]])
+    a = next(iter(actors.values()))
+    leaves = [Leaf("L_000001", "paragraph",
+                   "The Records & Administration Center Department shall own it.",
+                   "s1")]
+    links = scan(leaves, {a.actor_id: a})
+    assert any("Records & Administration" in l.surface for l in links)
+
+
+def test_reconcile_blank_use_is_not_invented():
+    # Run 7: a "-" cell got REVIEW "invented placeholder  —" because the
+    # model returned use="" — blank is absence, not invention.
+    from app.pipeline.decide import reconcile_batch
+    out = reconcile_batch(
+        ["L_1"], {"L_1": {"decision": "REWRITE", "use": "  "}}, {"<x>"})
+    assert out[0].decision == "REWRITE" and out[0].placeholder is None
+
+
+def test_keep_with_dictionary_links_becomes_visible_review():
+    # Run 7: the model KEPT "Board of Directors (Board)" in the approval
+    # sheet and the surface disappeared from the UI (buried warning). A KEEP
+    # on a leaf with locked-dictionary mentions must surface as REVIEW.
+    actors = {"A": make_actor("A", "Board of Directors", "ORG_UNIT",
+                              "governing board", ["Board of Directors"],
+                              "<governing_board>")}
+    leaves = [Leaf("L_000001", "table_cell", "Board of Directors", "s1",
+                   row="t1r3")]
+    links = scan(leaves, actors)
+    assert links                                   # the scan DID find it
+    decisions = [Decision("L_000001", "KEEP", reason="model said keep")]
+    res = validate_and_assemble(leaves, links, decisions, actors, [])
+    assert any(r["leaf_id"] == "L_000001" and "KEPT" in r["reason"]
+               for r in res.review_queue)
+
+
+def test_paragraph_text_not_doubled_by_inline_fallback():
+    # Run 7 parse check: the title leaf read "Data Governance Policy Data
+    # Governance Policy" — a text box nested inside the paragraph repeats
+    # its content in mc:Fallback and _p_text collected both copies.
+    from app.ingestion import ingest
+    W_NS = ('xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" '
+            'xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"')
+    doc = (f'<w:document {W_NS}><w:body>'
+           '<w:p><w:r><mc:AlternateContent>'
+           '<mc:Choice Requires="wps"><w:t>Data Governance Policy</w:t></mc:Choice>'
+           '<mc:Fallback><w:t>Data Governance Policy</w:t></mc:Fallback>'
+           '</mc:AlternateContent></w:r></w:p>'
+           '</w:body></w:document>')
+    usd = ingest(doc.encode(), "ooxml")
+    assert [l.text.strip() for l in usd.leaves] == ["Data Governance Policy"]

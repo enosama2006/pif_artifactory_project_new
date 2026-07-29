@@ -190,6 +190,18 @@ def merge_actors(section_extractions: list[list[dict]],
         a.actor_id = f"ACT_{len(out) + 1:03d}"
         out[a.actor_id] = a
 
+    # "&"⇄"and" notation drift (run 7: the doc wrote "Records &
+    # Administration…" while the variant said "and" — literal scan missed it
+    # and the paragraph fell to REVIEW): every variant exists in both forms.
+    for a in kept:
+        extra = set()
+        for v in a.variants:
+            if "&" in v:
+                extra.add(re.sub(r"\s*&\s*", " and ", v))
+            elif re.search(r"\band\b", v):
+                extra.add(re.sub(r"\s+and\s+", " & ", v))
+        a.variants = sorted(set(a.variants) | extra)
+
     # portrait hints: the document-level view of each actor's function
     hints: dict[str, str] = {}
     for pa in (portrait or {}).get("actors", []) or []:
@@ -357,15 +369,31 @@ def _drop_polluted_variants(a: Actor) -> list[str]:
     """An all-generic variant that is unrelated to the actor's own name is
     LLM pollution (run 5: "Advanced Analytics & AI" attached to the D&T
     department) — replacing it would hit ANOTHER actor's mentions. Related
-    means: the variant's key sits inside the name key or vice versa."""
+    means: the variant's key sits inside the name key or vice versa, OR the
+    variant spells out the name's acronym (run 7: "Records and Administration
+    Center Department" was dropped from actor "RAC" as 'all-generic')."""
     name_key = _key(a.name)
     kept = []
     for v in a.variants:
         vk = _key(v)
-        related = (vk == name_key or vk in name_key or name_key in vk)
+        related = (vk == name_key or vk in name_key or name_key in vk
+                   or _spells_acronym(a.name, v))
         if _has_identity(v) or related:
             kept.append(v)
     return kept or a.variants
+
+
+def _spells_acronym(name: str, variant: str) -> bool:
+    """True when `variant`'s capitalized initials contain `name`'s letters in
+    order — 'RAC' ⊂ initials of 'Records and Administration Center Department'
+    (R-A-C-D). Extra trailing words in the expansion are fine."""
+    if " " in name or not (2 <= len(name) <= 8):
+        return False
+    letters = re.sub(r"[^A-Za-z]", "", name).upper()
+    if len(letters) < 2:
+        return False
+    initials = iter(t[0] for t in _tokens(variant) if t[0].isupper())
+    return all(ch in initials for ch in letters)
 
 
 def _is_generic(a: Actor) -> bool:

@@ -196,7 +196,20 @@ def _drop_aggregate_duplicates(leaves, window: int = 12) -> None:
 
 
 def _p_text(p) -> str:
-    return "".join(t.text or "" for t in p.iter(f"{W}t"))
+    # A text box nested INSIDE the paragraph carries its content twice
+    # (mc:Choice + mc:Fallback) — collecting every w:t doubled the text of
+    # one leaf ("Data Governance Policy Data Governance Policy", run 7).
+    # Two exclusions keep each piece of text in exactly ONE leaf:
+    #   - w:t under mc:Fallback (legacy duplicate of the mc:Choice copy);
+    #   - w:t under a NESTED w:p (the walk emits that paragraph as its own
+    #     leaf — collecting it here too would double it, run 6 shape).
+    MC = "{http://schemas.openxmlformats.org/markup-compatibility/2006}"
+    skip = {id(t) for fb in p.iter(f"{MC}Fallback") for t in fb.iter(f"{W}t")}
+    for sub in p.iter(f"{W}p"):
+        if sub is not p:
+            skip.update(id(t) for t in sub.iter(f"{W}t"))
+    return "".join(t.text or "" for t in p.iter(f"{W}t")
+                   if id(t) not in skip)
 
 
 def _p_style(p) -> str:

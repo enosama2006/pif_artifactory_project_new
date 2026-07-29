@@ -11,6 +11,59 @@ Each change-set maps to ONE commit; find its hash with
 
 ---
 
+## Change-set: Run-7 fix package (2026-07-29)
+
+Trigger: run `65f9eecf0ee2` + owner audit of "dropped" table cells (none
+were silent — three distinct visible-but-wrong causes) + parse check
+finding a doubled title leaf.
+
+### agent/app/pipeline/inventory/merge.py
+- **What:** (1) after consolidation, every variant is expanded to BOTH
+  "&" and "and" notations; (2) `_drop_polluted_variants` keeps an
+  all-generic variant that spells out the actor's acronym (new helper
+  `_spells_acronym` — capitalized initials contain the name's letters in
+  order).
+- **Why:** L_000109 "Records & Administration Center Department" fell to
+  REVIEW: the variant said "and", the doc wrote "&", and the expansion
+  variant was being dropped as pollution because all its tokens are
+  generic.
+- **Rollback:** each is a self-contained block — remove the expansion loop
+  (after `_consolidate`) and/or the `_spells_acronym` clause; the REVIEW
+  returns.
+
+### agent/app/pipeline/validate_assemble/validate.py
+- **What:** KEEP branch — a leaf carrying locked-dictionary mention(s)
+  now lands in `review_queue` ("model KEPT a leaf carrying dictionary
+  mention(s): «…» — edit to apply the replacement") instead of a warning.
+- **Why:** L_000017 "Board of Directors (Board)": Groq's KEEP was a silent
+  veto; the owner saw the surface "vanish".
+- **Rollback:** delete the `kept_links` block at the top of the KEEP
+  branch; the old `_leaks_in` warning path underneath is unchanged.
+
+### agent/app/pipeline/decide/reconcile.py
+- **What:** `"use": ""` (blank/whitespace) is normalized to None before
+  the locked-dictionary check.
+- **Why:** L_000018 became a false "invented placeholder" REVIEW.
+- **Rollback:** remove the two-line normalization.
+
+### agent/app/ingestion/ooxml/block.py
+- **What:** `_p_text` now excludes w:t under `mc:Fallback` AND under any
+  NESTED `w:p` (the outer walk emits nested paragraphs as their own
+  leaves).
+- **Why:** an inline text box (mc:AlternateContent inside the paragraph)
+  doubled L_000001 to "Data Governance Policy Data Governance Policy";
+  the first fix attempt (Fallback-only) broke the run-6 nested-paragraph
+  case by emitting the text at both levels.
+- **Rollback:** restore the single-set version; the doubled title returns
+  in one of the two text-box shapes depending on which line you keep.
+
+### Tests
+- 4 new run-7 tests: ampersand notation drift links both forms, blank
+  `use` not invented, KEEP-with-links becomes visible REVIEW, inline
+  fallback not doubled (66 total, all green).
+
+---
+
 ## Change-set: Run-6 fix package (2026-07-29)
 
 Trigger: run `caf22833be79` — duplicated cover leaves, cover date in a

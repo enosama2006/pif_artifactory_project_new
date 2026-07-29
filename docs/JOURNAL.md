@@ -176,12 +176,47 @@ kinds, duplicate texts and full leaves, zero LLM cost.
 **Replay proof:** run-6 actors through the new merge → 29 actors down to 24,
 zero _2/_3 duplicates, full names in variants.
 
+## Run 7 — `65f9eecf0ee2` (2026-07-29)
+Best run so far: 359 leaves, 27 clean actors (abbreviation pairs +
+consolidation held — no `_2`/`_3`), 199 rewrites, **196/196 applies
+succeeded, 0 failed** (anchors did all the work), REVIEW down to 3. The
+new "🔍 Parse check" button earned its place immediately: it exposed the
+last remaining extraction defect without spending an LLM run.
+**Owner audit — "were table cells silently dropped?" Answer: NO — all
+three suspicious cells were visible items with three different causes:**
+(1) L_000109 «Records & Administration Center Department» — the doc wrote
+"&" while the dictionary variant said "and"; the literal scan missed it and
+the leaf fell to REVIEW (visible, but the rewrite was lost);
+(2) L_000017 «Board of Directors (Board)» — Groq answered KEEP on a leaf
+that carries a locked-dictionary mention; the veto was only a buried
+warning, so the surface seemed to vanish from the UI;
+(3) L_000018 — the model returned `"use": ""` (blank) and reconcile read
+the empty string as an *invented placeholder* → false REVIEW.
+Parse check also showed L_000001 as "Data Governance Policy Data
+Governance Policy" — an inline text box repeats its content in
+mc:Fallback *inside* the paragraph, and `_p_text` collected both copies.
+**Fixed (all deterministic, no prompt changes):**
+- merge: every variant now exists in BOTH "&" and "and" notations; an
+  all-generic variant that *spells out the actor's acronym* ("Records and
+  Administration Center Department" for RAC) is recognized as the
+  expansion, not pollution;
+- validate: KEEP on a leaf carrying dictionary mentions is now a visible,
+  editable REVIEW card ("model KEPT a leaf carrying dictionary
+  mention(s)…") instead of a buried warning — the LLM no longer gets a
+  silent veto;
+- reconcile: blank `use` is absence, not invention — no false REVIEW;
+- parser: `_p_text` excludes w:t under mc:Fallback AND under nested
+  paragraphs (the walk emits those as their own leaves) — each piece of
+  text lands in exactly one leaf for both text-box shapes.
+**Owner direction:** defer further add-in search/replace constraint work;
+FOCUS on Human-in-the-loop that *enriches* the initial run — three comment
+cases (missed surface via Word selection; dictionary edit that must
+propagate; unconvincing rewrite redone per comment). Design refined in
+`docs/BACKLOG.md` item 2.
+
 ## How to continue
-Next diagnostics paste → compare against Run 5: dictionary should look like
-the replay above (no `<organisational_unit_N>`, no `<person_N>`); REVIEW
-should drop to ~3 legitimate items (SDAIA directives — SDAIA was never
-extracted; portrait may fix that too); `operation_log` in the diagnostics
-now shows every apply outcome — check FAILED lines first; `events` +
-"peak parallelism" in stage messages settle the sequential-batches question.
-Then work `docs/BACKLOG.md` top-down. Every change-set is mapped in
-`docs/CHANGES.md` for rollback.
+Next milestone is BACKLOG item 2 (comment box + Redo, bound-arbiter path
+first). Next diagnostics paste → expect: zero notation-drift REVIEWs, KEPT
+dictionary mentions appearing as inline REVIEW cards, no doubled title in
+parse check. Then work `docs/BACKLOG.md` top-down. Every change-set is
+mapped in `docs/CHANGES.md` for rollback.

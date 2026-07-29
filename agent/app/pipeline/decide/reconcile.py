@@ -44,6 +44,8 @@ def reconcile_batch(sent_leaf_ids: list[str], response: dict,
                                 reason=f"auto-REVIEW: invalid decision {decision!r}"))
             continue
         ph = entry.get("use")
+        if isinstance(ph, str) and not ph.strip():
+            ph = None      # blank "use" is absence, not invention (run 7)
         if decision == "REWRITE" and ph is not None and ph not in allowed_placeholders:
             # A leaf with several mentions often comes back with "use" as a
             # comma-joined list ("<a>, <b>") — that is advisory, not invented

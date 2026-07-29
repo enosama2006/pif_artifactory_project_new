@@ -124,9 +124,19 @@ def validate_and_assemble(leaves, links, decisions, actors,
                                      "before": lf.text, "after": after,
                                      "spans": spans}))
         else:  # KEEP
-            for l in links_by_leaf.get(lf.leaf_id, []):
-                res.warnings.append(
-                    f"{lf.leaf_id}: surface «{l.surface}» ({l.actor_id}) on a KEEP leaf")
+            # Run-7 owner finding: the model KEPT "Board of Directors (Board)"
+            # in the approval sheet and the surface vanished from the UI (a
+            # buried warning). A KEEP on a leaf carrying LOCKED-dictionary
+            # mentions is a veto the LLM does not get silently — it becomes a
+            # visible, editable REVIEW card.
+            kept_links = links_by_leaf.get(lf.leaf_id, [])
+            if kept_links:
+                surfaces = ", ".join(f"«{l.surface}»" for l in kept_links[:4])
+                res.review_queue.append({
+                    "leaf_id": lf.leaf_id, "text": lf.text,
+                    "reason": f"model KEPT a leaf carrying dictionary mention(s): "
+                              f"{surfaces} — edit to apply the replacement"})
+                continue
             for tok, actor_id, acro in _leaks_in(lf.text, token_index):
                 if acro:
                     res.review_queue.append({
