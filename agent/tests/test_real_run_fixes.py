@@ -261,3 +261,52 @@ def test_long_outline_paragraph_stays_paragraph():
            '</w:body></w:document>')
     usd = ingest(doc.encode(), "ooxml")
     assert [l.kind for l in usd.leaves] == ["heading", "paragraph"]
+
+
+# ── fourth real run (72d2c2e3b84a): role/placeholder quality ────────────────
+
+def test_role_picking_prefers_function_over_name_echo():
+    from app.pipeline.inventory import merge_actors
+    actors = merge_actors([[
+        {"name": "Digital & Technology Department", "kind": "ORG_UNIT",
+         "role": "Digital & Technology Department",          # echoes the name
+         "variants": ["D&T", "Digital & Technology"]},
+    ], [
+        {"name": "Digital & Technology Department", "kind": "ORG_UNIT",
+         "role": "IT department",                            # the function
+         "variants": ["Digital & Technology Department"]},
+    ]])
+    a = next(iter(actors.values()))
+    assert a.placeholder == "<IT_department>"                # function wins
+
+
+def test_husk_placeholder_falls_back_to_kind():
+    from app.pipeline.inventory import merge_actors
+    actors = merge_actors([[
+        {"name": "Saudi Authority for Data and Artificial Intelligence",
+         "kind": "ORG_EXTERNAL",
+         "role": "Saudi Authority for Data and Artificial Intelligence",
+         "variants": ["Saudi Authority for Data and Artificial Intelligence"]},
+    ]])
+    a = next(iter(actors.values()))
+    assert a.placeholder == "<external_authority>"           # no <for_Data_and_...> husk
+
+
+def test_duplicate_tail_word_collapses():
+    assert collapse_duplicate_placeholder(
+        "The <governance_department> Department shall lead."
+    ) == "The <governance_department> shall lead."
+    # unrelated following word must survive
+    assert collapse_duplicate_placeholder(
+        "The <governance_department> leads.") == "The <governance_department> leads."
+
+
+def test_payload_carries_row_for_block_apply():
+    actors = {"A": make_actor("A", "Zeta Corp", "ORG_OWNER", "issuer",
+                              ["Zeta Corp"], "<issuer>")}
+    leaves = [Leaf("L_000001", "table_cell", "Zeta Corp", "s1",
+                   row="t1r1", col="Name", anchor="anz:C_1")]
+    links = scan(leaves, actors)
+    res = validate_and_assemble(leaves, links, [Decision("L_000001", "REWRITE")], actors)
+    assert res.payload[0]["row"] == "t1r1"
+    assert res.payload[0]["column"] == "Name"

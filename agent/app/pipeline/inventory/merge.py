@@ -86,10 +86,52 @@ def merge_actors(section_extractions: list[list[dict]]) -> dict[str, Actor]:
 
     identity_tokens = _identity_tokens(out)
     for a in out.values():
-        primary = a.roles[0] if a.roles else a.kind.lower()
-        a.placeholder = _mint_placeholder(primary, identity_tokens)
+        name_tokens = {t.lower() for v in [a.name, *a.variants] for t in _tokens(v)}
+        a.placeholder = _mint_placeholder(_pick_role(a, identity_tokens),
+                                          identity_tokens, name_tokens, a.kind)
     _dedupe_placeholders(out)
     return out
+
+
+_GLUE = {"of", "for", "and", "the", "a", "an", "in", "to"}
+
+_KIND_FALLBACK = {
+    "PERSON": "person", "ORG_OWNER": "owner_organisation",
+    "ORG_UNIT": "organisational_unit", "ORG_EXTERNAL": "external_authority",
+    "INTERNAL_DOC": "internal_document", "SYSTEM": "internal_system",
+}
+
+
+def _pick_role(a: Actor, identity_tokens: set[str]) -> str:
+    """Prefer the role that FUNCTIONS, not the one that echoes the name.
+
+    Real-run finding (72d2c2e3b84a): the LLM often restates the entity's name
+    as its 'role' ("Digital & Technology Department"), and stripping identity
+    tokens then leaves a husk ("<Department>", "<Board_of>",
+    "<for_Data_and_Intelligence>"). Score every extracted role: fewest
+    identity/name-echo tokens wins, meaningful (non-glue) remainder required.
+    """
+    def score(role: str):
+        toks = _tokens(role)
+        echo = sum(1 for t in toks if t.lower() in identity_tokens)
+        meaningful = [t for t in toks
+                      if t.lower() not in identity_tokens and t.lower() not in _GLUE]
+        return (0 if meaningful else 1, echo, -len(meaningful))
+
+    return min(a.roles, key=score) if a.roles else ""
+
+
+def _mint_placeholder(role: str, identity_tokens: set[str],
+                      name_tokens: set[str], kind: str) -> str:
+    toks = [t for t in _tokens(role) if t.lower() not in identity_tokens]
+    substantive = [t for t in toks if t.lower() not in _GLUE]
+    # A role whose every substantive word comes from the actor's own name is a
+    # description, not a function ("Saudi Authority for Data and Artificial
+    # Intelligence" → "for Data and Intelligence") — fall back to the kind.
+    if not substantive or all(t.lower() in name_tokens for t in substantive):
+        toks = [_KIND_FALLBACK.get(kind, "actor")]
+    text = re.sub(r"[^\w؀-ۿ]+", "_", "_".join(toks)).strip("_") or "actor"
+    return f"<{text}>"
 
 
 def _find_by_variant(merged: dict[str, Actor], variants: list[str]):
@@ -131,13 +173,6 @@ def _identity_tokens(actors: dict[str, Actor]) -> set[str]:
                 if t.lower() not in GENERIC_TOKENS and len(t) >= 2:
                     out.add(t.lower())
     return out
-
-
-def _mint_placeholder(role: str, identity_tokens: set[str]) -> str:
-    toks = [t for t in _tokens(role) if t.lower() not in identity_tokens]
-    text = "_".join(toks) if toks else "actor"
-    text = re.sub(r"[^\w؀-ۿ]+", "_", text).strip("_") or "actor"
-    return f"<{text}>"
 
 
 def _dedupe_placeholders(actors: dict[str, Actor]) -> None:

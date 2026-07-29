@@ -34,10 +34,15 @@ changed (a unit may appear without its type word, or with a different one:
 "…Department" also appearing bare, or as "…Division"), and possessive or
 prefixed uses. A variant you omit will survive anonymization.
 
-ROLE must be DISTINCTIVE, not a bare type word: describe the function
-("technology department", "records-management unit", "national data
-regulator"), never just "department" or "committee" — the role becomes the
-replacement text and must still distinguish actors of the same type.
+ROLE is the GENERIC FUNCTION, never the name: describe what this actor DOES
+in terms that fit ANY organisation — imagine the organisation is anonymous
+and you must still convey who acts. An IT/technology unit is "IT department";
+a person who owns this policy is "policy owner"; a state data regulator is
+"national data regulator"; a records unit is "records-management unit".
+NEVER echo the entity's own name or its distinctive words in the role — the
+role becomes the replacement text, so a role that restates the name defeats
+anonymization. It must also stay distinctive, never a bare type word like
+"department" or "committee" alone.
 
 Do NOT extract (they carry no identity and replacing them damages the
 document):

@@ -39,11 +39,18 @@ _ACRONYMISH = re.compile(r"^(?:[A-Z]{2,6}|[A-Za-z]*[A-Z][a-z]*[A-Z][A-Za-z]*)$")
 _PLACEHOLDER_RE = re.compile(r"<[^<>]+>")
 
 
+# "<X_department> Department" — the placeholder's last word repeated right
+# after the tag (a trimmed variant replaced inside a longer name) reads as a
+# stutter; drop the duplicate word (real-run finding 72d2c2e3b84a).
+_DUP_TAIL = re.compile(r"(<[^<>]*?([A-Za-z؀-ۿ]{2,})>)\s+\2\b", re.IGNORECASE)
+
+
 def collapse_duplicate_placeholder(text: str) -> str:
     prev = None
     while prev != text:
         prev = text
         text = _DUP_DEF.sub(r"\1", text)
+        text = _DUP_TAIL.sub(r"\1", text)
     return text
 
 
@@ -102,6 +109,7 @@ def validate_and_assemble(leaves, links, decisions, actors,
             if spans:
                 after = collapse_duplicate_placeholder(render_preview(lf, spans))
                 pending.append((lf, {"leaf_id": lf.leaf_id, "anchor": lf.anchor,
+                                     "row": lf.row, "column": lf.col,
                                      "before": lf.text, "after": after,
                                      "spans": spans}))
         else:  # KEEP

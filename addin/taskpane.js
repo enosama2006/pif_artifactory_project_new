@@ -13,7 +13,7 @@
  */
 /* global Office, Word, fetch, document */
 
-const UI_VERSION = "0.5.1";        // bump when the pane changes — shown in the header
+const UI_VERSION = "0.6.0";        // bump when the pane changes — shown in the header
 let RUN = null;                    // completed run result
 let SERVER = "http://localhost:8080";
 const STAGE_LABELS = {
@@ -92,14 +92,33 @@ async function anchorRange(start, end) {
 }
 
 async function anchorDocument() {
-  anchorSeq = 0;
   let total = 0;
+  let duplicateTags = 0;
   await Word.run(async (ctx) => {
     const paras = ctx.document.body.paragraphs;
     paras.load("items");
+    const ccs = ctx.document.contentControls;
+    ccs.load("items/tag");
     await ctx.sync();
     total = paras.items.length;
+    // Tag numbering must CONTINUE from the highest existing anz index —
+    // restarting at 1 collided with tags left by earlier runs and produced
+    // duplicate anchors on unrelated paragraphs (real-run 72d2c2e3b84a).
+    const seen = {};
+    let maxIdx = 0;
+    ccs.items.forEach(c => {
+      const m = /^anz:C_(\d+)$/.exec(c.tag || "");
+      if (!m) return;
+      maxIdx = Math.max(maxIdx, parseInt(m[1], 10));
+      seen[c.tag] = (seen[c.tag] || 0) + 1;
+    });
+    duplicateTags = Object.values(seen).filter(n => n > 1).length;
+    anchorSeq = maxIdx;
   });
+  if (duplicateTags > 0) {
+    log(`WARNING: ${duplicateTags} duplicate anchor tag(s) from an older run detected — ` +
+        `click "Clean anchors", then run again for precise apply.`);
+  }
 
   let anchored = 0, skipped = 0, failed = 0;
   for (let start = 0; start < total; start += ANCHOR_CHUNK) {
@@ -203,16 +222,40 @@ async function runPipeline() {
 /* ── 3. results: metrics / dictionary / review / changes ─────────────────── */
 
 /* Map every span to its actor (by the ORIGINAL placeholder) so renames and
- * ignores recompute `after` from spans, never by string surgery on text. */
+ * ignores recompute `after` from spans, never by string surgery on text.
+ * Also build actor → mention anchors for the Locate button. */
+let MENTIONS = {};       // actor_id -> [anchors], document order
+let LOCATE_IDX = {};     // actor_id -> cycling cursor
+
 function indexSpans() {
   const byPh = {};
   Object.values(RUN.actors || {}).forEach(a => { byPh[a.placeholder] = a.actor_id; });
   (RUN.payload || []).forEach(p => {
     (p.spans || []).forEach(s => { s.actor_id = byPh[s.replace] || null; });
   });
+  MENTIONS = {}; LOCATE_IDX = {};
+  const anchorByLeaf = {};
+  (RUN.leaves || []).forEach(l => { anchorByLeaf[l.leaf_id] = l.anchor; });
+  (RUN.links || []).forEach(l => {
+    const a = anchorByLeaf[l.leaf_id];
+    if (!a) return;
+    MENTIONS[l.actor_id] = MENTIONS[l.actor_id] || [];
+    if (!MENTIONS[l.actor_id].includes(a)) MENTIONS[l.actor_id].push(a);
+  });
+}
+
+async function locateActor(actorId) {
+  const list = MENTIONS[actorId] || [];
+  if (!list.length) { log("No located mentions for this actor."); return; }
+  const i = (LOCATE_IDX[actorId] = ((LOCATE_IDX[actorId] ?? -1) + 1) % list.length);
+  try {
+    await withCc(list[i], async (_c, cc) => cc.select());
+    log(`Located ${RUN.actors[actorId].name}: mention ${i + 1}/${list.length}`);
+  } catch (e) { log("ERROR: " + fmtErr(e)); }
 }
 
 function recomputeAfter(p) {
+  if (p.edited) { p.empty = false; return; }   // human wording wins over recompute
   let text = p.before;
   const active = (p.spans || []).filter(s =>
     !(s.actor_id && RUN.actors[s.actor_id] && RUN.actors[s.actor_id].ignored));
@@ -259,6 +302,7 @@ function renderResults() {
         `<td><input class="ph" id="ph_${a.actor_id}" value="${esc(a.placeholder)}" ${off ? "disabled" : ""}></td>` +
         `<td style="white-space:nowrap">` +
         `<button class="ghost small" onclick="renamePlaceholder('${a.actor_id}')" ${off ? "disabled" : ""}>Save</button> ` +
+        `<button class="ghost small" onclick="locateActor('${a.actor_id}')" title="Cycle through this actor's mentions in the document">📍 ${(MENTIONS[a.actor_id] || []).length}</button> ` +
         `<button class="ghost small" onclick="toggleIgnore('${a.actor_id}')">${off ? "↩ Restore" : "🚫 Ignore"}</button>` +
         `</td></tr>`;
       }).join("") + "</table>"
@@ -274,20 +318,51 @@ function renderResults() {
     : "<div class='muted'>Nothing needs review 🎉</div>";
   show("secReview");
 
-  const pl = (RUN.payload || []).filter(p => !p.empty);  // fully-ignored → original stands
+  // A table ROW is one connected block (owner's rule): its cells render and
+  // apply together, never as scattered independent cards.
+  const pl = (RUN.payload || []).filter(p => !p.empty);
   $("changeCount").textContent = pl.length;
-  $("changes").innerHTML = pl.map(p => {
+  const rows = {};                       // row key -> [payload indices]
+  const singles = [];
+  pl.forEach(p => {
     const i = RUN.payload.indexOf(p);
+    if (p.row) (rows[p.row] = rows[p.row] || []).push(i);
+    else singles.push(i);
+  });
+
+  const cellHtml = (i) => {
+    const p = RUN.payload[i];
+    return `<tr id="cell_${i}"><td class="muted">${esc(p.column || "")}</td>` +
+      `<td><div class="before">${esc(p.before)}</div>` +
+      `<div class="after" id="after_${i}">${esc(p.after)}</div></td>` +
+      `<td><button class="ghost small" onclick="editItem(${i})">✎</button></td></tr>`;
+  };
+
+  const rowCards = Object.entries(rows).map(([rk, idxs]) =>
+    `<div class="card" id="row_${esc(rk)}">` +
+    `<span class="tag">table row ${esc(rk)}</span>` +
+    `<table style="border:0">${idxs.map(cellHtml).join("")}</table>` +
+    `<div class="actions">` +
+    `<button class="ghost small" onclick='applyRow(${JSON.stringify(idxs)})'>✓ Apply row</button>` +
+    `<button class="ghost small" onclick="goTo(${idxs[0]})">Locate</button>` +
+    `<button class="ghost small" onclick='rejectRow(${JSON.stringify(idxs)}, "${esc(rk)}")'>✗ Reject row</button>` +
+    `</div></div>`);
+
+  const singleCards = singles.map(i => {
+    const p = RUN.payload[i];
     return `<div class="card" id="chg_${i}">` +
     `<div class="before">${esc(p.before)}</div>` +
-    `<div class="after">${esc(p.after)}</div>` +
+    `<div class="after" id="after_${i}">${esc(p.after)}</div>` +
     `<div class="actions">` +
     `<button class="ghost small" onclick="applyOne(${i})">✓ Apply</button>` +
+    `<button class="ghost small" onclick="editItem(${i})">✎ Edit</button>` +
     `<button class="ghost small" onclick="goTo(${i})">Locate</button>` +
     `<button class="ghost small" onclick="reject(${i})">✗ Reject</button>` +
     `<span class="anchor" style="margin-inline-start:auto">${esc(p.anchor || p.leaf_id)}</span>` +
     `</div></div>`;
-  }).join("") ||
+  });
+
+  $("changes").innerHTML = (singleCards.join("") + rowCards.join("")) ||
     "<div class='muted'>No changes proposed.</div>";
   show("secChanges");
 }
@@ -317,17 +392,20 @@ async function applyOne(i) {
   }
   try {
     await withCc(p.anchor, async (_ctx, cc) => cc.insertText(p.after, "Replace"));
-    $("chg_" + i).classList.add("applied");
+    p.applied = true;
+    const el = $("chg_" + i);
+    if (el) el.classList.add("applied");
+    const cell = $("cell_" + i);
+    if (cell) cell.style.opacity = 0.45;
     intervene("accept_leaf", p.leaf_id, {});
-  } catch (e) { log("ERROR: " + e.message); }
+  } catch (e) { log("ERROR: " + fmtErr(e)); }
 }
 
 async function applyAll() {
   for (let i = 0; i < (RUN.payload || []).length; i++) {
-    if (RUN.payload[i].empty) continue;          // fully ignored → original stands
-    const el = $("chg_" + i);
-    if (el && !el.classList.contains("applied") && !el.classList.contains("rejected"))
-      await applyOne(i);
+    const p = RUN.payload[i];
+    if (p.empty || p.rejected || p.applied) continue;
+    await applyOne(i);
   }
   log("All changes applied as tracked changes — review them in Word's Review tab.");
 }
@@ -341,8 +419,49 @@ async function goTo(i) {
 
 function reject(i) {
   const p = RUN.payload[i];
-  $("chg_" + i).classList.add("rejected");
+  const el = $("chg_" + i);
+  if (el) el.classList.add("rejected");
+  p.rejected = true;
   intervene("reject_leaf", p.leaf_id, {});
+}
+
+/* row = one connected block: its cells apply together, reject together */
+async function applyRow(idxs) {
+  for (const i of idxs) await applyOne(i);
+  const rk = RUN.payload[idxs[0]].row;
+  const el = $("row_" + rk);
+  if (el) el.classList.add("applied");
+  log(`Row ${rk}: ${idxs.length} cell(s) applied as one block.`);
+}
+
+function rejectRow(idxs, rk) {
+  idxs.forEach(i => { RUN.payload[i].rejected = true;
+                      intervene("reject_leaf", RUN.payload[i].leaf_id, {}); });
+  const el = $("row_" + rk);
+  if (el) el.classList.add("rejected");
+}
+
+/* HITL edit: the human's wording wins and is stored as an intervention */
+function editItem(i) {
+  const p = RUN.payload[i];
+  const el = $("after_" + i);
+  if (!el || el.querySelector("textarea")) return;
+  const current = p.after;
+  el.innerHTML = `<textarea style="width:100%;min-height:52px;font-size:12px;"
+    id="ta_${i}"></textarea>
+    <button class="ghost small" onclick="saveEdit(${i})">💾 Save</button>`;
+  $("ta_" + i).value = current;
+  $("ta_" + i).focus();
+}
+
+function saveEdit(i) {
+  const p = RUN.payload[i];
+  const v = $("ta_" + i).value;
+  p.after = v;
+  p.edited = true;
+  intervene("edit_leaf", p.leaf_id, { after: v });
+  log(`Edited ${p.leaf_id} — saved as intervention.`);
+  renderResults();
 }
 
 function renamePlaceholder(actorId) {
