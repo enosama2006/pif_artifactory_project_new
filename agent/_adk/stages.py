@@ -22,8 +22,7 @@ from app.pipeline.decide import Decision, reconcile_batch
 from app.pipeline.decide.prompt import build_decide_prompt, build_retry_prompt
 from app.pipeline.inventory import Actor, merge_actors
 from app.pipeline.inventory.prompt import CLASS_ENUM, build_classify_prompt, build_inventory_prompt
-from app.pipeline.rules import apply_rules, load_rules
-from app.pipeline.rules.engine import CascadeHit
+from app.pipeline.rules.engine import CascadeHit, compute_cascade
 from app.pipeline.surface_scan import scan
 from app.pipeline.surface_scan.scan import SurfaceLink
 from app.pipeline.validate_assemble import validate_and_assemble
@@ -225,34 +224,9 @@ async def classify_rules_stage(state, llm):
 
     # WHAT is hidden in each row, by class — run-5: only doc-name rows were
     # collected, so hiding a person/org in approval rows never cascaded and
-    # their dates/reference numbers survived (cascade fired 0×).
-    actors = _actors(state)
-    kind_to_class = {"PERSON": "PERSON", "ORG_OWNER": "ORG_OWNER",
-                     "ORG_UNIT": "ORG_UNIT", "ORG_EXTERNAL": "ORG_EXTERNAL",
-                     "INTERNAL_DOC": "INTERNAL_DOC_NAME", "SYSTEM": "SYSTEM"}
-    actor_class = {a.actor_id: kind_to_class.get(a.kind, a.kind)
-                   for a in actors.values()}
-    leaf_rows = {l.leaf_id: l.row for l in leaves}
-    hidden_rows: dict[str, set] = {}
-    for l in _links(state):
-        row = leaf_rows.get(l.leaf_id)
-        if row and l.actor_id in actor_class:
-            hidden_rows.setdefault(row, set()).add(actor_class[l.actor_id])
-    hits = apply_rules(load_rules(), leaves, hidden_rows, classifications)
-
-    # Owner rule (run-5 feedback): the document's own date is never left
-    # as-is. A leaf that IS one date, outside any table, in the front matter
-    # (before the first heading) is the document's date → <document_date>.
-    from app.pipeline.candidates.sweep import whole_text_is_date
-    for lf in leaves:
-        if lf.kind == "heading":
-            break
-        if lf.row is None and whole_text_is_date(lf.text):
-            hits.append(CascadeHit(
-                leaf_id=lf.leaf_id, surface=lf.text.strip(),
-                klass="QUALIFIER_OF_IDENTIFIER", rule="document_date_on_cover",
-                reason="the document's issue date identifies it",
-                placeholder="<document_date>"))
+    # their dates/reference numbers survived (cascade fired 0×). The whole
+    # deterministic pass is shared with the comment-driven partial re-run.
+    hits = compute_cascade(leaves, _actors(state), _links(state), classifications)
 
     return {"ok": True,
             "message": f"{len(classifications)} classified; cascade fired {len(hits)}×",

@@ -11,8 +11,11 @@ Ordered by owner priority. Every item lands with a regression test.
    messages; false "invented placeholder" REVIEWs gone (~3 legit REVIEWs
    expected: SDAIA directives — SDAIA was never in the inventory; check
    whether the portrait fixes that).
-2. **Comment box + Redo — HITL that ENRICHES the run (owner-confirmed
-   focus, 2026-07-29; refined with the owner's three real cases).**
+2. **Comment box + Redo — HITL that ENRICHES the run.
+   ✅ PHASE 1 (bound path) IMPLEMENTED 2026-07-29 — architecture in
+   `docs/DESIGN_hitl_comments.md`, rollback in `docs/CHANGES.md`, 10 tests.
+   Remaining: phase 2 (free-comment full re-run with seed dictionary) and
+   the org-memory seeding (item 4). Original agreed design below.**
    Purpose: every run occasionally drops an entity; the human closes the
    gap AND the correction becomes stored knowledge for future documents.
 

@@ -45,9 +45,23 @@ what each cell value means before deciding):
 
 DICTIONARY:
 {json.dumps(payload["dictionary"], ensure_ascii=False)}
-
+{_guidance_section(payload)}
 LEAVES (every leaf below needs a decision):
 {json.dumps(payload["leaves"], ensure_ascii=False)}"""
+
+
+def _guidance_section(payload: dict) -> str:
+    """Comment-driven redo only: the human's instruction per leaf is BINDING —
+    it outranks every default. Empty on the initial run, producing the exact
+    original prompt (one blank line difference only)."""
+    guidance = payload.get("user_guidance") or {}
+    if not guidance:
+        return ""
+    return f"""
+USER GUIDANCE (BINDING — a human reviewed these leaves and commented; follow
+the instruction for its leaf even where the default rules would say KEEP):
+{json.dumps(guidance, ensure_ascii=False)}
+"""
 
 
 def build_retry_prompt(payload: dict) -> str:

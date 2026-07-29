@@ -11,6 +11,90 @@ Each change-set maps to ONE commit; find its hash with
 
 ---
 
+## Change-set: HITL comments + Redo, phase 1 — bound arbiter path (2026-07-29)
+
+Trigger: owner-confirmed focus after run 7 — Human-in-the-loop that
+ENRICHES the run. Architecture: `docs/DESIGN_hitl_comments.md` (read it
+first; this entry is the rollback map).
+
+### agent/app/pipeline/arbiter/ (NEW package)
+- **What:** `ops.py` — the CLOSED operation set (add_surface,
+  rename_placeholder, merge_actors, correct_role, ignore_actor, edit_leaf,
+  rewrite_leaf, comment) + `validate_op` (unknown op/actor/leaf/format →
+  user-facing error string, never executed); `prompt.py` — one comment in,
+  one operation out.
+- **Rollback:** the package is only imported by the redo engine — deleting
+  both removes the feature cleanly.
+
+### agent/app/pipeline/redo/ (NEW package)
+- **What:** `engine.py` — `resolve_bind` (comment → leaf: explicit id →
+  anchor → normalized paragraph text → unique selection containment;
+  ambiguity reported, never guessed); `apply_op` (dictionary mutations,
+  pure code); `redo_run` (arbiter per comment → validated ops → re-scan ALL
+  leaves → cascade recompute from STORED classifications → decide
+  mini-batch ONLY for leaves whose mention spans changed or rewrite_leaf
+  targets, user guidance attached → merged decisions → full gates →
+  edit_leaf overrides → updated_leaf_ids diff + redo_report).
+- **Rollback:** same as arbiter — self-contained package.
+
+### agent/app/pipeline/rules/engine.py
+- **What:** NEW `compute_cascade(leaves, actors, links, classifications)` —
+  the full deterministic cascade pass (class-aware hidden rows + rules +
+  cover document date) extracted from `classify_rules_stage` so the initial
+  run and the redo compute identical cascades.
+- **Rollback:** inline it back into `_adk/stages.py` (pure move, no
+  behavior change — the run-5/6 cascade tests prove it).
+
+### agent/_adk/stages.py
+- **What:** `classify_rules_stage` now calls `compute_cascade` (deleted the
+  inlined block).
+
+### agent/app/pipeline/decide/prompt.py
+- **What:** optional `user_guidance` payload section ("BINDING — a human
+  reviewed these leaves"); absent → the prompt is byte-identical to before,
+  so the initial run is untouched.
+- **Rollback:** remove `_guidance_section` and its call.
+
+### agent/app/pipeline/inventory/merge.py
+- **What:** NEW `mint_user_actor(name, kind, role, surfaces)` — a
+  human-added actor bypasses the `_is_generic` pollution gate (the gate
+  guards LLM extractions; the user's word is authoritative — "Strategy
+  Office" is all-generic yet real) while reusing `_mint_placeholder`.
+- **Rollback:** delete the function; redo's add_surface/new_actor path
+  breaks (its test says so).
+
+### agent/app/api/routes.py (0.4.0 → 0.5.0)
+- **What:** `POST /runs/{id}/comments` (deterministic bind resolution at
+  submit time + durable `comment` intervention row),
+  `DELETE /runs/{id}/comments/{cid}`, `POST /runs/{id}/redo` (consumes all
+  pending comments, replaces the run result in place, appends [redo] events,
+  returns redo_report + updated_leaf_ids + full result); run records carry
+  `comments`/`processed_comments`; INTERVENTION_TYPES += comment,
+  rewrite_leaf.
+- **Rollback:** the three endpoints and the two record keys are additive.
+
+### addin/taskpane.js (0.7.2 → 0.8.0) + taskpane.html
+- **What:** Comments section — one comment box, bind chip, 💬 buttons on
+  dictionary rows and change cards, "💬 Comment on selection" (reads
+  selection + paragraph + anchor tag from Word), pending drawer with
+  ✕ remove, one "🔁 Redo with comments (N)" button, "↻ updated by your
+  comment" badges from updated_leaf_ids, redo_report in the operation log,
+  diagnostics v3 (+pending/processed comments, redo_report,
+  updated_leaf_ids).
+- **Rollback:** the section + the functions between the HITL banner comment
+  and the diagnostics banner in taskpane.js; the 💬 buttons and
+  `updatedBadge` in renderResults.
+
+### Tests
+- NEW `tests/test_hitl_comments.py` — 10 tests: closed-op gate (2), bind
+  resolution never guesses, the owner's 3 cases end-to-end (missed surface
+  finds siblings + re-decides only them; rename propagates with ZERO decide
+  calls; rewrite_leaf carries guidance into the prompt), invalid arbiter
+  output reported-not-executed, edit_leaf verbatim override, ignore_actor
+  dissolves rewrites, comments API round-trip (76 total, green).
+
+---
+
 ## Change-set: Run-7 fix package (2026-07-29)
 
 Trigger: run `65f9eecf0ee2` + owner audit of "dropped" table cells (none

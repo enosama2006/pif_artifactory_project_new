@@ -4,6 +4,10 @@
   POST /runs                          start a run (async); ?wait=1 runs inline
   GET  /runs/{run_id}                 live status: stage progress, then result
   POST /runs/{run_id}/interventions   record a user action (durable row)
+  POST /runs/{run_id}/comments        add a pending HITL comment (bound/free)
+  DELETE /runs/{run_id}/comments/{id} remove a pending comment
+  POST /runs/{run_id}/redo            arbiter + partial re-run over the
+                                      pending comments (docs/DESIGN_hitl_comments.md)
 
 POST /runs body = the document itself: .docx bytes, raw word/document.xml,
 or the Office.js getOoxml() package. The add-in polls GET /runs/{id} to show
@@ -23,13 +27,14 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-app = FastAPI(title="anonymizer-agent", version="0.4.0")
+app = FastAPI(title="anonymizer-agent", version="0.5.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"],
                    allow_methods=["*"], allow_headers=["*"])
 
 INTERVENTION_TYPES = {
     "rename_placeholder", "merge_actors", "correct_role", "add_surface",
     "ignore_actor", "accept_leaf", "reject_leaf", "edit_leaf", "annotate",
+    "comment", "rewrite_leaf",
 }
 
 STAGE_NAMES = ["ingest", "portrait", "inventory", "surface_scan",
@@ -43,6 +48,12 @@ class Intervention(BaseModel):
     target: str          # actor_id or leaf_id
     payload: dict = {}
     note: str = ""
+
+
+class Comment(BaseModel):
+    text: str
+    # bind: {leaf_id?|actor_id?|anchor?, paragraph_text?, selected_text?}
+    bind: dict = {}
 
 
 @app.get("/health")
@@ -164,7 +175,8 @@ async def create_run(request: Request, wait: int = 0):
 
     run_id = uuid.uuid4().hex[:12]
     RUNS[run_id] = {"run_id": run_id, "status": "running",
-                    "current_stage": None, "stages": [], "result": None}
+                    "current_stage": None, "stages": [], "result": None,
+                    "comments": [], "processed_comments": []}
     if wait:
         await _execute(run_id, tmp.name)
         return {"ok": RUNS[run_id]["status"] == "completed", **RUNS[run_id]}
@@ -189,3 +201,96 @@ def add_intervention(run_id: str, iv: Intervention):
                 "allowed": sorted(INTERVENTION_TYPES)}
     Store().add_intervention(run_id, iv.type, iv.target, iv.payload, iv.note)
     return {"ok": True}
+
+
+# ── HITL comments + Redo (docs/DESIGN_hitl_comments.md) ─────────────────────
+
+@app.post("/runs/{run_id}/comments")
+def add_comment(run_id: str, c: Comment):
+    """Accumulate a pending comment. The binding is resolved DETERMINISTICALLY
+    now (anchor → paragraph text → selection), so the pane can show the user
+    which leaf their comment landed on before anything runs."""
+    from app.ingestion._contract import Leaf
+    from ..pipeline.redo import resolve_bind
+    from ..store import Store
+
+    rec = RUNS.get(run_id)
+    if rec is None:
+        return {"ok": False, "error": "unknown run_id"}
+    if rec["status"] != "completed" or not rec.get("result"):
+        return {"ok": False, "error": "run not completed — comments attach to results"}
+    if not c.text.strip():
+        return {"ok": False, "error": "empty comment"}
+
+    leaves = [Leaf(**d) for d in rec["result"].get("leaves", [])]
+    resolved = resolve_bind(c.bind, leaves)
+    comment = {"id": uuid.uuid4().hex[:8], "text": c.text.strip(),
+               "bind": c.bind, "resolved": resolved}
+    rec.setdefault("comments", []).append(comment)
+    try:   # durable: every comment is org memory even before the redo
+        Store().add_intervention(
+            run_id, "comment",
+            resolved.get("leaf_id") or resolved.get("actor_id") or "unbound",
+            {"bind": c.bind, "resolved": resolved}, c.text.strip())
+    except Exception:
+        pass
+    return {"ok": True, "comment": comment,
+            "pending": len(rec["comments"])}
+
+
+@app.delete("/runs/{run_id}/comments/{comment_id}")
+def remove_comment(run_id: str, comment_id: str):
+    rec = RUNS.get(run_id)
+    if rec is None:
+        return {"ok": False, "error": "unknown run_id"}
+    before = len(rec.get("comments", []))
+    rec["comments"] = [c for c in rec.get("comments", []) if c["id"] != comment_id]
+    return {"ok": len(rec["comments"]) < before,
+            "pending": len(rec["comments"])}
+
+
+@app.post("/runs/{run_id}/redo")
+async def redo(run_id: str):
+    """Process ALL pending comments: one closed-output arbiter call each,
+    validated ops applied to the dictionary, then the deterministic partial
+    re-run (re-scan → cascade → decide only affected leaves → gates).
+    Invalid arbiter output lands in redo_report — shown, never executed."""
+    import time
+
+    from ..llm import get_llm
+    from ..pipeline.redo import redo_run
+
+    rec = RUNS.get(run_id)
+    if rec is None:
+        return {"ok": False, "error": "unknown run_id"}
+    if rec["status"] != "completed" or not rec.get("result"):
+        return {"ok": False, "error": "run not completed"}
+    comments = rec.get("comments", [])
+    if not comments:
+        return {"ok": False, "error": "no pending comments"}
+
+    t0 = time.monotonic()
+
+    def _progress(msg):
+        rec["detail"] = msg
+        rec.setdefault("events", []).append(
+            {"t": round(time.monotonic() - t0, 1), "msg": f"[redo] {msg}"})
+
+    try:
+        delta = await redo_run(rec["result"], comments, get_llm(),
+                               progress=_progress)
+    except Exception as exc:
+        return {"ok": False, "error": f"redo failed: {exc!r}"}
+
+    report = delta.pop("redo_report")
+    updated = delta.pop("updated_leaf_ids")
+    rec["result"].update(delta)
+    rec["result"]["redo_report"] = report
+    rec["result"]["updated_leaf_ids"] = updated
+    rec.setdefault("processed_comments", []).extend(comments)
+    rec["comments"] = []
+    _progress(f"redo done: {len(report)} comment(s), "
+              f"{len(updated)} leaf/leaves updated")
+    return {"ok": True, "redo_report": report, "updated_leaf_ids": updated,
+            "metrics": rec["result"].get("metrics", {}),
+            "result": rec["result"]}

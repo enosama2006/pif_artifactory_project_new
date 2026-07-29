@@ -277,6 +277,21 @@ def _mint_placeholder(a: Actor, ranked_roles: list[str],
     return f"<{_KIND_FALLBACK.get(a.kind, 'actor')}>"
 
 
+def mint_user_actor(name: str, kind: str, role: str,
+                    surfaces: list[str]) -> Actor:
+    """An actor added EXPLICITLY by a human comment (HITL add_surface with
+    new_actor). The generic gate does NOT apply — `_is_generic` guards
+    against LLM pollution, but the user's word is authoritative even when
+    every token is generic ("Strategy Office"). Minting reuses the same
+    placeholder machinery as the run."""
+    variants = sorted({name, *surfaces} - {""})
+    a = Actor(actor_id="", name=name, kind=kind,
+              roles=[role] if role else [], variants=variants)
+    name_tokens = {t.lower() for v in variants for t in _tokens(v)}
+    a.placeholder = _mint_placeholder(a, [role or name, name], set(), name_tokens)
+    return a
+
+
 def _merge_keys(a: Actor) -> set[str]:
     """Keys an actor may consolidate on: its name key plus every variant
     that carries identity OR at least two substantive words — a single

@@ -45,11 +45,15 @@ Arabic, but ALL code, UI and docs are English.
 policy doc, press "Copy diagnostics", paste the JSON here; analyze leaks/
 quality, implement deterministic fixes + tests, push, they pull and rerun.
 
-**State as of run 5 (a30d8030eb59) + fix package:** pipeline is
+**State as of run 7 (65f9eecf0ee2) + HITL phase 1:** pipeline is
 ingest → portrait (document context, ONE LLM call) → inventory →
 surface_scan → classify_rules → decide → assemble. Placeholder minting is
 function-aware (FUNCTION_TOKENS, frequency-ranked roles, PERSON-title rule);
-add-in v0.7.0 auto-cleans anchors, logs every operation, and text-fallback
-applies anchorless cover leaves. Run diagnostics carry events, per-stage
-seconds, peak parallelism and the operation log. Remaining rough edges and
-deferred items → `docs/BACKLOG.md`; rollback map → `docs/CHANGES.md`.
+add-in v0.8.0 auto-cleans anchors, logs every operation, text/shape-fallback
+applies anchorless leaves, and carries the HITL comment box: 💬 on
+dictionary rows / change cards / the Word selection → pending drawer →
+🔁 Redo (one CLOSED-output arbiter call per comment + deterministic partial
+re-run — `docs/DESIGN_hitl_comments.md`). Run diagnostics v3 carry events,
+per-stage seconds, peak parallelism, the operation log and the redo report.
+Remaining rough edges and deferred items → `docs/BACKLOG.md`; rollback
+map → `docs/CHANGES.md`.

@@ -13,8 +13,10 @@
  */
 /* global Office, Word, fetch, document */
 
-const UI_VERSION = "0.7.2";        // bump when the pane changes — shown in the header
+const UI_VERSION = "0.8.0";        // bump when the pane changes — shown in the header
 let RUN = null;                    // completed run result
+let COMMENTS = [];                 // pending HITL comments (mirror of the server)
+let PENDING_BIND = null;           // {bind:{...}, label} set by the 💬 buttons
 let SERVER = "http://localhost:8080";
 const STAGE_LABELS = {
   ingest: "Ingest — leaf inventory",
@@ -318,6 +320,8 @@ async function runPipeline() {
     if (rec.status === "error") throw new Error(rec.error || "run failed");
 
     RUN = { run_id: rec.run_id, llm_mode: rec.llm_mode, ...rec.result };
+    COMMENTS = [];           // a fresh run starts with an empty comment drawer
+    PENDING_BIND = null;
     absorbReviewItems();     // REVIEW leaves join the list, in document order
     indexSpans();
     $("diagBtn").disabled = false;
@@ -510,7 +514,8 @@ function renderResults() {
         `<td style="white-space:nowrap">` +
         `<button class="ghost small" onclick="renamePlaceholder('${a.actor_id}')" ${off ? "disabled" : ""}>Save</button> ` +
         `<button class="ghost small" onclick="locateActor('${a.actor_id}')" title="Cycle through this actor's mentions in the document">📍 ${(MENTIONS[a.actor_id] || []).length}</button> ` +
-        `<button class="ghost small" onclick="toggleIgnore('${a.actor_id}')">${off ? "↩ Restore" : "🚫 Ignore"}</button>` +
+        `<button class="ghost small" onclick="toggleIgnore('${a.actor_id}')">${off ? "↩ Restore" : "🚫 Ignore"}</button> ` +
+        `<button class="ghost small" onclick="bindToActor('${a.actor_id}')" title="Comment on this actor — the Redo propagates it to the DB and every linked text">💬</button>` +
         `</td></tr>`;
       }).join("") + "</table>"
     : "<div class='muted'>No actors extracted (stub mode? set GROQ_API_KEY and rerun).</div>";
@@ -541,14 +546,21 @@ function renderResults() {
       `<td><button class="ghost small" onclick="editItem(${i})">✎</button></td></tr>`;
   };
 
+  const updatedBadge = (leafIds) =>
+    leafIds.some(id => (RUN.updated_leaf_ids || []).includes(id))
+      ? `<span class="tag" style="color:var(--accent)">↻ updated by your comment</span>`
+      : "";
+
   const rowCard = (rk, idxs) =>
     `<div class="card" id="row_${esc(rk)}">` +
     `<span class="tag">table row ${esc(rk)}</span>` +
+    updatedBadge(idxs.map(j => RUN.payload[j].leaf_id)) +
     `<table style="border:0">${idxs.map(cellHtml).join("")}</table>` +
     `<div class="actions">` +
     `<button class="ghost small" onclick='applyRow(${JSON.stringify(idxs)})'>✓ Apply row</button>` +
     `<button class="ghost small" onclick="goTo(${idxs[0]})">Locate</button>` +
     `<button class="ghost small" onclick='rejectRow(${JSON.stringify(idxs)}, "${esc(rk)}")'>✗ Reject row</button>` +
+    `<button class="ghost small" onclick="bindToLeaf(${idxs[0]})" title="Comment on this row — the Redo re-does it per your instruction">💬</button>` +
     `</div></div>`;
 
   const singleCard = (i) => {
@@ -556,6 +568,7 @@ function renderResults() {
     const review = p.review && !p.edited;
     return `<div class="card${p.review ? " review" : ""}" id="chg_${i}">` +
     (p.review ? `<span class="tag" style="color:var(--warn)">REVIEW — ${esc(p.reviewReason || "")}</span>` : "") +
+    updatedBadge([p.leaf_id]) +
     `<div class="before"${review ? ' style="text-decoration:none"' : ""}>${esc(p.before)}</div>` +
     (review ? `<div class="muted" id="after_${i}">unchanged until you edit it</div>`
             : `<div class="after" id="after_${i}">${esc(p.after)}</div>`) +
@@ -564,6 +577,7 @@ function renderResults() {
     `<button class="ghost small" onclick="editItem(${i})">✎ Edit</button>` +
     `<button class="ghost small" onclick="goTo(${i})">Locate</button>` +
     (review ? "" : `<button class="ghost small" onclick="reject(${i})">✗ Reject</button>`) +
+    `<button class="ghost small" onclick="bindToLeaf(${i})" title="Comment on this text — the Redo re-does it per your instruction">💬</button>` +
     `<span class="anchor" style="margin-inline-start:auto">${esc(p.anchor || p.leaf_id)}</span>` +
     `</div></div>`;
   };
@@ -587,6 +601,8 @@ function renderResults() {
   $("changes").innerHTML = parts.join("") ||
     "<div class='muted'>No changes proposed.</div>";
   show("secChanges");
+  show("secComments");
+  renderComments();
 }
 
 const chip = (label, value, cls = "") =>
@@ -773,6 +789,164 @@ async function removeAnchors() {
   op("clean", `${removed} anchor(s) removed manually (content kept).`);
 }
 
+/* ── HITL comments + Redo (docs/DESIGN_hitl_comments.md) ──────────────────
+ * Three binding gestures feed ONE drawer: 💬 on a dictionary row (actor),
+ * 💬 on a change card (leaf), or "💬 Comment on selection" which reads the
+ * Word selection (text + paragraph + anchor tag) so a missed surface never
+ * has to be typed by hand. Nothing runs until 🔁 Redo — the server arbiter
+ * turns each comment into ONE closed operation, invalid output is shown and
+ * never executed, and only affected leaves are re-decided. */
+
+function bindToActor(actorId) {
+  const a = RUN.actors[actorId];
+  PENDING_BIND = { bind: { actor_id: actorId }, label: `actor «${a.name}»` };
+  showBindChip();
+  $("commentText").focus();
+}
+
+function bindToLeaf(i) {
+  const p = RUN.payload[i];
+  PENDING_BIND = { bind: { leaf_id: p.leaf_id },
+                   label: `${p.row ? "row cell " : "text "}${p.leaf_id}` };
+  showBindChip();
+  $("commentText").focus();
+}
+
+function showBindChip() {
+  const chip = $("bindChip");
+  if (PENDING_BIND) {
+    chip.style.display = "block";
+    chip.innerHTML = `bound to ${esc(PENDING_BIND.label)} ` +
+      `<button class="ghost small" onclick="clearBind()">✕</button>`;
+  } else {
+    chip.style.display = "none";
+    chip.innerHTML = "";
+  }
+}
+
+function clearBind() {
+  PENDING_BIND = null;
+  showBindChip();
+}
+
+/* Case 1 (missed surface): the user selects the text in Word, writes the
+ * comment, and this button captures selection + paragraph + anchor tag —
+ * the server resolves the exact leaf deterministically. */
+async function commentOnSelection() {
+  if (!RUN) { log("Run the pipeline first."); return; }
+  if (!$("commentText").value.trim()) {
+    log("Write the comment first, then click 💬 Comment on selection."); return;
+  }
+  let bind = null;
+  try {
+    await Word.run(async (ctx) => {
+      const sel = ctx.document.getSelection();
+      sel.load("text");
+      const para = sel.paragraphs.getFirstOrNullObject();
+      para.load("isNullObject,text");
+      const cc = sel.parentContentControlOrNullObject;
+      cc.load("isNullObject,tag");
+      await ctx.sync();
+      bind = {
+        selected_text: (sel.text || "").trim(),
+        paragraph_text: para.isNullObject ? "" : (para.text || "").trim(),
+      };
+      if (!cc.isNullObject && (cc.tag || "").startsWith("anz:")) bind.anchor = cc.tag;
+    });
+  } catch (e) { log("ERROR reading the selection: " + fmtErr(e)); return; }
+  if (!bind.selected_text) {
+    log("Nothing selected — select the target text in the document first."); return;
+  }
+  await postComment(bind, `selection «${bind.selected_text.slice(0, 40)}»`);
+}
+
+function submitComment() {
+  postComment(PENDING_BIND ? PENDING_BIND.bind : {},
+              PENDING_BIND ? PENDING_BIND.label : "free comment");
+}
+
+async function postComment(bind, label) {
+  if (!RUN) { log("Run the pipeline first."); return; }
+  const text = $("commentText").value.trim();
+  if (!text) { log("Empty comment."); return; }
+  try {
+    const r = await (await fetch(`${SERVER}/runs/${RUN.run_id}/comments`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text, bind: bind || {} }),
+    })).json();
+    if (!r.ok) throw new Error(r.error || "comment rejected");
+    r.comment.label = label;
+    COMMENTS.push(r.comment);
+    $("commentText").value = "";
+    clearBind();
+    renderComments();
+    const res = r.comment.resolved || {};
+    op("comment", `added (${label}) → ` +
+       (res.leaf_id ? `leaf ${res.leaf_id} via ${res.how}` :
+        res.actor_id ? `actor ${res.actor_id}` :
+        res.note ? `UNRESOLVED: ${res.note}` : "free") +
+       ` — ${r.pending} pending.`);
+  } catch (e) { log("ERROR adding comment: " + fmtErr(e)); }
+}
+
+async function removeComment(id) {
+  try {
+    const r = await (await fetch(`${SERVER}/runs/${RUN.run_id}/comments/${id}`,
+                                 { method: "DELETE" })).json();
+    if (!r.ok) throw new Error(r.error || "not found");
+    COMMENTS = COMMENTS.filter(c => c.id !== id);
+    renderComments();
+  } catch (e) { log("ERROR removing comment: " + fmtErr(e)); }
+}
+
+function renderComments() {
+  $("commentCount").textContent = COMMENTS.length;
+  const btn = $("redoBtn");
+  btn.disabled = !COMMENTS.length;
+  btn.textContent = `🔁 Redo with comments (${COMMENTS.length})`;
+  $("commentList").innerHTML = COMMENTS.map(c => {
+    const res = c.resolved || {};
+    const where = res.leaf_id ? `→ ${res.leaf_id}` :
+                  res.actor_id ? `→ actor ${res.actor_id}` :
+                  res.note ? `⚠ ${res.note}` : "free";
+    return `<div class="card"><div>${esc(c.text)}</div>` +
+      `<div class="muted">${esc(c.label || "")} ${esc(where)}</div>` +
+      `<div class="actions">` +
+      `<button class="ghost small" onclick="removeComment('${c.id}')">✕ Remove</button>` +
+      `</div></div>`;
+  }).join("") || "<div class='muted'>No pending comments — bind one with the 💬 buttons or write a free one.</div>";
+}
+
+async function redoWithComments() {
+  if (!RUN || !COMMENTS.length) return;
+  $("redoBtn").disabled = true;
+  $("redoBtn").textContent = "🔁 Redo running…";
+  try {
+    log(`Redo: processing ${COMMENTS.length} comment(s)…`);
+    const r = await (await fetch(`${SERVER}/runs/${RUN.run_id}/redo`,
+                                 { method: "POST" })).json();
+    if (!r.ok) throw new Error(r.error || "redo failed");
+    (r.redo_report || []).forEach(e => {
+      if (e.error) op("redo", `✗ "${(e.text || "").slice(0, 50)}" — ${e.error}` +
+                             ` (nothing was executed for this comment)`);
+      else op("redo", `✓ "${(e.text || "").slice(0, 50)}" → ${e.op}` +
+                      (e.applied ? ` (${e.applied})` : ""));
+    });
+    RUN = { run_id: RUN.run_id, llm_mode: RUN.llm_mode, ...r.result };
+    COMMENTS = [];
+    absorbReviewItems();
+    indexSpans();
+    renderResults();
+    op("redo", `${(r.updated_leaf_ids || []).length} card(s) updated by your ` +
+       `comments — look for the ↻ badge.`);
+  } catch (e) { log("ERROR redo: " + fmtErr(e)); }
+  finally {
+    $("redoBtn").disabled = !COMMENTS.length;
+    renderComments();
+  }
+}
+
 /* ── diagnostics report — paste it to the developer/assistant to evaluate ── */
 
 async function copyDiagnostics() {
@@ -784,7 +958,7 @@ async function copyDiagnostics() {
   const r = (full && full.result) || RUN;
 
   const report = {
-    diagnostics_version: 2,
+    diagnostics_version: 3,
     generated_at: new Date().toISOString(),
     ui_version: UI_VERSION,
     run_id: RUN.run_id,
@@ -810,6 +984,10 @@ async function copyDiagnostics() {
     })),
     review_queue: r.review_queue || [],
     warnings: r.warnings || [],
+    pending_comments: COMMENTS,
+    processed_comments: (full && full.processed_comments) || [],
+    redo_report: r.redo_report || [],
+    updated_leaf_ids: r.updated_leaf_ids || [],
   };
   const text = "=== ANONYMIZER DIAGNOSTICS ===\n" + JSON.stringify(report, null, 1);
 

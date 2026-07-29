@@ -214,9 +214,32 @@ cases (missed surface via Word selection; dictionary edit that must
 propagate; unconvincing rewrite redone per comment). Design refined in
 `docs/BACKLOG.md` item 2.
 
+## Post-run-7: HITL comments + Redo built (2026-07-29)
+Owner's order: "design the technical architecture, then implement" — done
+in one change-set. Architecture in `docs/DESIGN_hitl_comments.md`, rollback
+map in `docs/CHANGES.md`. What shipped (phase 1, bound path):
+- **Agent:** arbiter package (one comment → ONE closed operation, invalid
+  output shown never executed), redo package (`resolve_bind` anchor→
+  paragraph→selection with no guessing; partial re-run: re-scan all leaves,
+  cascade from stored classifications, decide ONLY affected leaves with the
+  user's comment as BINDING guidance), `mint_user_actor` (a human-added
+  actor bypasses the generic-pollution gate), three new endpoints
+  (comments add/remove, redo), decide prompt gains an optional
+  user_guidance section (byte-identical without it).
+- **Add-in v0.8.0:** one comment box; 💬 on dictionary rows, on change
+  cards, and on the WORD SELECTION (captures text + paragraph + anchor);
+  pending drawer; one 🔁 Redo button; ↻ "updated by your comment" badges;
+  redo report in the log; diagnostics v3.
+- **Proven by test (76 green):** the owner's three cases — missed surface
+  gets siblings linked by pure re-scan and only those leaves re-decided;
+  a placeholder rename reaches every text with ZERO LLM calls; an
+  unconvincing row is re-done with the comment inside the prompt. Plus:
+  a comment the arbiter answers with an out-of-enum op changes NOTHING.
+
 ## How to continue
-Next milestone is BACKLOG item 2 (comment box + Redo, bound-arbiter path
-first). Next diagnostics paste → expect: zero notation-drift REVIEWs, KEPT
-dictionary mentions appearing as inline REVIEW cards, no doubled title in
-parse check. Then work `docs/BACKLOG.md` top-down. Every change-set is
-mapped in `docs/CHANGES.md` for rollback.
+Next calibration run exercises the loop end-to-end: run → comment the gaps
+(select text / 💬 a row / 💬 a card) → 🔁 Redo → check the ↻ badges and the
+redo report in diagnostics v3. Phase 2 (free comments → guidance-seeded
+full re-run) and org-memory seeding (BACKLOG 4) come after the loop proves
+itself on the real document. Every change-set is mapped in
+`docs/CHANGES.md` for rollback.

@@ -139,6 +139,24 @@
       <div id="changes"></div>
     </section>
 
+    <section id="secComments">
+      <h2>Comments <span id="commentCount" class="badge">0</span></h2>
+      <div class="card">
+        <div id="bindChip" class="muted" style="display:none; margin-bottom:5px;"></div>
+        <textarea id="commentText" placeholder="Describe what should change — a missed name, a dictionary fix, or how a text should read…"
+          style="width:100%; min-height:52px; font-size:12px; border:1px solid var(--line);
+                 border-radius:8px; padding:6px 8px;"></textarea>
+        <div class="actions" style="margin-top:5px">
+          <button class="ghost small" onclick="commentOnSelection()"
+            title="Select the missed text in the document first — the comment binds to it automatically">💬 Comment on selection</button>
+          <button class="ghost small" onclick="submitComment()">➕ Add comment</button>
+        </div>
+      </div>
+      <div id="commentList"></div>
+      <button id="redoBtn" class="primary" style="margin-top:6px"
+        onclick="redoWithComments()" disabled>🔁 Redo with comments (0)</button>
+    </section>
+
     <div id="log"></div>
   </main>
 
