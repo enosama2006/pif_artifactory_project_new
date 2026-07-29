@@ -260,12 +260,22 @@ def _mint_placeholder(a: Actor, ranked_roles: list[str],
         if not substantive:
             continue                        # identity-stripping left a husk
         restates = all(t.lower() in name_tokens for t in substantive)
-        if restates and a.kind != "PERSON" and len(substantive) > 3:
-            # >3 name words back-to-back is a reconstruction of the proper
-            # name, not a function ("Saudi Authority for Data and Artificial
-            # Intelligence"). Short restatements are fine ("technology
-            # department"); a PERSON title restated IS the function.
-            continue
+        if restates and a.kind != "PERSON":
+            # A role rebuilt from name words is a reconstruction, not a
+            # function: >3 scattered name words ("Saudi Authority for Data
+            # and Artificial Intelligence", run 5) OR ≥3 words that form a
+            # CONTIGUOUS chunk of the proper name (HITL run 2: "National
+            # Data Management Office" minted <data_management_office> —
+            # owner: "wrong anonymising, must be abstracted"). Scattered
+            # 3-word descriptions stay fine ("data governance department"
+            # for the DCGA); a PERSON title restated IS the function.
+            sub = [t.lower() for t in substantive]
+            seqs = [[t.lower() for t in _tokens(v)] for v in [a.name, *a.variants]]
+            contiguous = any(sub == seq[i:i + len(sub)]
+                             for seq in seqs
+                             for i in range(len(seq) - len(sub) + 1))
+            if len(sub) > 3 or (len(sub) >= 3 and contiguous):
+                continue
         # never start/end the tag with glue ("<of_authority>", run 6)
         while toks and toks[0].lower() in _GLUE:
             toks.pop(0)

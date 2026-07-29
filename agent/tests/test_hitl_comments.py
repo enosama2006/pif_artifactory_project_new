@@ -354,6 +354,50 @@ def test_add_surface_reports_mentions_linked():
     assert delta["redo_report"][0]["mentions_linked"] == 2   # both siblings
 
 
+# ── HITL run 2: name-echoing placeholder + arbiter context for renames ──────
+
+def test_three_word_name_restatement_never_becomes_the_placeholder():
+    # Run abcd1b02f497: "National Data Management Office" minted
+    # <data_management_office> — three name words back-to-back. Owner:
+    # "wrong anonymising, must be abstracted".
+    from app.pipeline.inventory import merge_actors
+    actors = merge_actors([[
+        {"name": "National Data Management Office", "kind": "ORG_EXTERNAL",
+         "role": "data management office",
+         "variants": ["NDMO", "National Data Management Office"]}]])
+    a = next(iter(actors.values()))
+    assert "data_management_office" not in a.placeholder
+
+
+def test_arbiter_sees_actor_and_placeholder_of_linked_mentions():
+    # A "wrong anonymising" complaint routes to rename_placeholder — the
+    # arbiter needs the actor_id and current placeholder of the bound
+    # leaf's mention in its context.
+    actors = {"ACT_001": BOARD}
+    result = build_result(LEAVES, actors)
+    seen = {}
+
+    class SpyLlm(ScriptedLlm):
+        def json_call(self, prompt, *, payload=None, **kw):
+            if (payload or {}).get("task") == "arbiter":
+                seen.update(payload.get("target", {}))
+            return super().json_call(prompt, payload=payload, **kw)
+
+    llm = SpyLlm(arbiter=[{"op": "rename_placeholder", "actor_id": "ACT_001",
+                           "placeholder": "<oversight_body>",
+                           "reason": "user wants abstraction"}])
+    comments = [{"id": "c1", "text": "wrong anonymising — abstract it",
+                 "bind": {"leaf_id": "L_000002"},
+                 "resolved": {"leaf_id": "L_000002", "how": "explicit"}}]
+    delta = asyncio.run(redo_run(result, comments, llm))
+    mentions = seen["leaf"]["linked_mentions"]
+    assert mentions and mentions[0]["actor_id"] == "ACT_001"
+    assert mentions[0]["placeholder"] == "<governing_board>"
+    # and the rename actually propagated
+    assert delta["actors"]["ACT_001"]["placeholder"] == "<oversight_body>"
+    assert any("<oversight_body>" in p["after"] for p in delta["payload"])
+
+
 # ── API round-trip: comments accumulate, redo consumes them ─────────────────
 
 def test_comments_api_roundtrip(monkeypatch):

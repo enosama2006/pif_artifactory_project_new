@@ -179,14 +179,19 @@ async def redo_run(result: dict, comments: list[dict], llm,
             out["actor"] = dictionary.get(r["actor_id"])
         lid = r.get("leaf_id")
         if lid and lid in leaf_by_id:
-            # linked_mentions is decisive for the arbiter's add_surface-vs-
-            # rewrite_leaf choice: identity in the text but NOT in this list
-            # is a missed surface (HITL run 1: "CoS DH" comments became
-            # toothless rewrite_leaf ops instead of add_surface).
+            # linked_mentions is decisive for the arbiter's routing: identity
+            # in the text but NOT in this list is a missed surface (HITL
+            # run 1: "CoS DH" became toothless rewrite_leaf ops); the
+            # actor_id/placeholder let a "wrong anonymising" complaint route
+            # to rename_placeholder (HITL run 2).
+            ph_of = {a.actor_id: a.placeholder for a in actors.values()}
             out["leaf"] = {
                 "id": lid, "text": leaf_by_id[lid].text,
-                "linked_mentions": sorted({l["surface"] for l in old_links
-                                           if l["leaf_id"] == lid})}
+                "linked_mentions": sorted(
+                    ({"surface": l["surface"], "actor_id": l["actor_id"],
+                      "placeholder": ph_of.get(l["actor_id"])}
+                     for l in old_links if l["leaf_id"] == lid),
+                    key=lambda m: m["surface"])}
             if lid in old_payload_by_leaf:
                 out["current_rewrite"] = old_payload_by_leaf[lid].get("after")
         return out

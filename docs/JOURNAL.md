@@ -267,10 +267,33 @@ and "➕ Queue".
 REVIEWs at once; a duplication comment should change the card text and
 badge it ↻.
 
+## HITL run 2 — `abcd1b02f497` (2026-07-29)
+The popover shipped and was used immediately; the no-change warning fired
+exactly as designed. Owner comment on the NDMO cell: "wrong anonymising,
+you must abstract" — and then: "nothing happened when pressing Send &
+Redo".
+**Found:** (1) the run minted `<data_management_office>` for "National
+Data Management Office" — three name words back-to-back; the run-5 guard
+only rejected >3-word restatements, so a 3-word CONTIGUOUS chunk of the
+proper name slipped through (iron-rule-4 violation); (2) the arbiter
+routed a complaint about the PLACEHOLDER to rewrite_leaf — the right op
+was rename_placeholder on the linked actor, but the arbiter had no
+actor_id/placeholder in its context to name; (3) the honest ⚠ warning
+existed but only in the monospace log — invisible next to the popover the
+owner just used.
+**Fixed:** minting rejects ≥3 substantive words forming a contiguous chunk
+of the name/variants (scattered 3-word descriptions like "data governance
+department" stay allowed); arbiter guide routes replacement complaints to
+rename_placeholder and linked_mentions now ship actor_id + current
+placeholder; add-in 0.8.2 renders the last redo's outcome as colored
+cards in the Comments section and scrolls them into view when zero cards
+changed.
+
 ## How to continue
 Next calibration run exercises the fixed loop: comment a missed surface →
-expect add_surface + mentions_linked in the redo report; comment a wording
-problem → expect the card text to actually change (↻ badge). Phase 2
-(free comments → guidance-seeded full re-run) and org-memory seeding
-(BACKLOG 4) come after. Every change-set is mapped in `docs/CHANGES.md`
-for rollback.
+expect add_surface + mentions_linked in the redo report; a "wrong
+placeholder" comment → expect rename_placeholder rippling through every
+linked card; a wording problem → the card text actually changes (↻).
+Phase 2 (free comments → guidance-seeded full re-run) and org-memory
+seeding (BACKLOG 4) come after. Every change-set is mapped in
+`docs/CHANGES.md` for rollback.

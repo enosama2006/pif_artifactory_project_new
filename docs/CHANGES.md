@@ -11,6 +11,48 @@ Each change-set maps to ONE commit; find its hash with
 
 ---
 
+## Change-set: HITL run-2 fixes — name-chunk placeholders, rename routing, visible redo outcome (2026-07-29)
+
+Trigger: run `abcd1b02f497` — owner commented "wrong anonymising, you must
+abstract" on the NDMO cell (its placeholder was `<data_management_office>`,
+a literal chunk of the org's name) and then reported "nothing happened when
+pressing Send & Redo" (the arbiter had routed the complaint to a
+rewrite_leaf, which correctly warned "no visible change" — but the warning
+lived only in the monospace log).
+
+### agent/app/pipeline/inventory/merge.py
+- **What:** the name-restatement guard in `_mint_placeholder` now also
+  rejects a non-PERSON role whose ≥3 substantive words form a CONTIGUOUS
+  chunk of the actor's name/variant word sequence ("data management
+  office" ⊂ "National Data Management Office"); scattered 3-word
+  descriptions stay allowed ("data governance department" for the DCGA)
+  and the old >3-scattered rule is unchanged.
+- **Rollback:** restore the single `len > 3` condition; name-chunk
+  placeholders return.
+
+### agent/app/pipeline/arbiter/prompt.py
+- **What:** decision-guide bullet: complaints about the REPLACEMENT itself
+  ("wrong anonymising", "must be more abstract") → rename_placeholder for
+  the actor of the leaf's linked mention, proposing an abstract tag.
+
+### agent/app/pipeline/redo/engine.py
+- **What:** `linked_mentions` in the arbiter's target context now carries
+  `actor_id` + current `placeholder` per mention (a rename needs the id).
+
+### addin/taskpane.js (0.8.1 → 0.8.2) + taskpane.html
+- **What:** `renderRedoReport` — the last redo's outcome renders as
+  colored cards in the Comments section (✓ / ⚠ warning / ✗ error, with
+  mentions_linked); when zero cards changed it scrolls itself into view so
+  the WHY is unmissable; cleared on a fresh run.
+- **Rollback:** remove the div + function + two call sites; the outcome
+  falls back to the log only.
+
+### Tests
+- 2 new: contiguous name-chunk never minted; the arbiter context carries
+  actor_id/placeholder and a rename propagates end-to-end (82 total).
+
+---
+
 ## Change-set: HITL run-1 fixes — popover UX, guided rewrites, honest reports (2026-07-29)
 
 Trigger: run `996b0afbd924`, the first real use of the comment loop. Owner

@@ -13,7 +13,7 @@
  */
 /* global Office, Word, fetch, document */
 
-const UI_VERSION = "0.8.1";        // bump when the pane changes — shown in the header
+const UI_VERSION = "0.8.2";        // bump when the pane changes — shown in the header
 let RUN = null;                    // completed run result
 let COMMENTS = [];                 // pending HITL comments (mirror of the server)
 let PENDING_BIND = null;           // {bind:{...}, label} set by the 💬 buttons
@@ -322,6 +322,7 @@ async function runPipeline() {
     RUN = { run_id: rec.run_id, llm_mode: rec.llm_mode, ...rec.result };
     COMMENTS = [];           // a fresh run starts with an empty comment drawer
     PENDING_BIND = null;
+    $("redoReport").style.display = "none";
     absorbReviewItems();     // REVIEW leaves join the list, in document order
     indexSpans();
     $("diagBtn").disabled = false;
@@ -919,6 +920,30 @@ async function removeComment(id) {
   } catch (e) { log("ERROR removing comment: " + fmtErr(e)); }
 }
 
+/* Outcome of the LAST redo, rendered as visible cards (owner feedback,
+ * HITL run 2: "nothing happened when pressing Send & Redo" — the answer
+ * lived only in the monospace log). If nothing changed, the report scrolls
+ * itself into view so the WHY is unmissable. */
+function renderRedoReport(report, updatedCount) {
+  const el = $("redoReport");
+  if (!report.length) { el.style.display = "none"; return; }
+  el.style.display = "block";
+  el.innerHTML =
+    `<div class="muted" style="margin:4px 0">Last redo — ${updatedCount} card(s) changed:</div>` +
+    report.map(e => {
+      const color = e.error ? "var(--err)" : e.warning ? "var(--warn)" : "var(--ok)";
+      const head = e.error ? "✗" : e.warning ? "⚠" : "✓";
+      const what = e.error ? e.error
+        : `${e.op}${e.applied ? " — " + e.applied : ""}` +
+          (e.mentions_linked != null ? ` — ${e.mentions_linked} new mention(s) linked` : "") +
+          (e.warning ? " — " + e.warning : "");
+      return `<div class="card" style="border-inline-start:3px solid ${color}">` +
+        `<div>${head} “${esc((e.text || "").slice(0, 80))}”</div>` +
+        `<div class="muted">${esc(what)}</div></div>`;
+    }).join("");
+  if (updatedCount === 0) el.scrollIntoView({ behavior: "smooth", block: "nearest" });
+}
+
 function renderComments() {
   $("commentCount").textContent = COMMENTS.length;
   const btn = $("redoBtn");
@@ -959,6 +984,7 @@ async function redoWithComments() {
     absorbReviewItems();
     indexSpans();
     renderResults();
+    renderRedoReport(r.redo_report || [], (r.updated_leaf_ids || []).length);
     op("redo", `${(r.updated_leaf_ids || []).length} card(s) updated by your ` +
        `comments — look for the ↻ badge.`);
   } catch (e) { log("ERROR redo: " + fmtErr(e)); }

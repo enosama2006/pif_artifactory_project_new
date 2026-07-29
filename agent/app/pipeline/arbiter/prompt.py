@@ -42,6 +42,12 @@ Decision guide (READ FIRST — real failures happened here):
 - rewrite_leaf is for WORDING problems on a leaf whose identities are
   already linked: a duplicated phrase, grammar, restructuring ("fix it,
   'all employees' was duplicated").
+- A complaint about the REPLACEMENT itself — "wrong anonymising", "the
+  placeholder still reveals who it is", "must be more abstract", "should
+  say what to put here later" — is rename_placeholder for the actor of the
+  leaf's linked mention (TARGET CONTEXT gives its actor_id and current
+  placeholder). Propose an ABSTRACT function tag that does not echo the
+  actor's name words.
 - TARGET CONTEXT lists the surfaces already linked on the bound leaf —
   anything identity-like in its text that is NOT in that list is a missed
   surface (add_surface), not a rewrite.
